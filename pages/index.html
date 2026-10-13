@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>阅伴 · 微信读书控制台</title><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; base-uri 'self'; form-action 'self'">
-  <meta name="description" content="一个安静、清晰的微信读书多账户管理空间。">
-  <link rel="icon" href="./static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./static/style.css"><script defer src="./static/libsodium.js"></script><script defer src="./static/libsodium-wrappers.js"></script><script defer src="./static/github.js"></script><script defer src="./static/notifications.js"></script><script defer src="./static/app.js"></script>
+  <meta name="description" content="微信读书多账户管理">
+  <link rel="icon" href="./static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./static/style.css?v=e3573c5800"><script defer src="./static/libsodium.js?v=0a66b0fdfb"></script><script defer src="./static/libsodium-wrappers.js?v=828884732c"></script><script defer src="./static/github.js?v=95f7320fa6"></script><script defer src="./static/notifications.js?v=df425afe13"></script><script defer src="./static/app.js?v=532c3c7770"></script>
 </head>
 <body>
 <svg class="sprite" xmlns="http://www.w3.org/2000/svg"><defs>
@@ -27,49 +27,47 @@
 </defs></svg>
 <div class="app-shell">
   <aside class="sidebar">
-    <a class="brand" href="./"><span class="brand-symbol"><svg class="icon"><use href="#i-book"/></svg></span><span>阅伴<small>WEREAD COMPANION</small></span></a>
-    <div class="nav-label">我的阅读空间</div>
+    <a class="brand" href="./"><span class="brand-symbol"><svg class="icon"><use href="#i-book"/></svg></span><span>阅伴</span></a>
+    <div class="nav-label">控制台</div>
     <nav aria-label="主导航">
       <button class="nav-item active" data-view="overview"><svg class="icon"><use href="#i-grid"/></svg>总览<span class="nav-dot"></span></button>
       <button class="nav-item" data-view="accounts"><svg class="icon"><use href="#i-users"/></svg>账户管理<span id="nav-count" class="nav-count">0</span></button>
       <button class="nav-item" data-view="history"><svg class="icon"><use href="#i-list"/></svg>运行记录</button>
       <button class="nav-item" data-view="settings"><svg class="icon"><use href="#i-settings"/></svg>计划与通知</button>
     </nav>
-    <div class="sidebar-note"><span class="status-dot"></span>阅读任务交给 Actions<p>管理多个账户，<br>让每天的计划一目了然。</p><svg class="note-book" viewBox="0 0 140 80" aria-hidden="true"><path d="M70 30Q45 5 8 16v50q38-10 62 8 25-18 62-8V16Q95 5 70 30Z"/><path d="M70 30v44M22 30q22-6 34 7M22 43q22-6 34 7M84 37q13-13 33-7M84 50q13-13 33-7"/></svg></div>
-    <div class="sidebar-footer"><span class="footer-avatar">阅</span><div>微信读书控制台<small>多账户 · GitHub Pages + Actions</small></div></div>
+    <div class="sidebar-footer"><span class="footer-avatar">阅</span><div>微信读书控制台</div></div>
   </aside>
   <div class="workspace">
-    <header class="topbar"><div><span class="topbar-label">GitHub Pages</span><span class="slash">/</span><span id="breadcrumb">总览</span></div><div class="topbar-right"><span class="live-status"><span class="status-dot"></span><span id="connection">正在连接</span></span><span id="today-label"></span><button id="logout" class="text-button" hidden>断开连接</button></div></header>
-    <main id="content" aria-live="polite"><div class="loading">正在打开你的阅读空间…</div></main>
-    <footer class="page-footer"><span>阅伴 · 每一天，读一点</span><a href="https://github.com/wbshm/wxread" target="_blank" rel="noreferrer">GitHub 项目 ↗</a></footer>
+    <header class="topbar"><div><span class="topbar-label">控制台</span><span class="slash">/</span><span id="breadcrumb">总览</span></div><div class="topbar-right"><span class="live-status"><span class="status-dot"></span><span id="connection">正在连接</span></span><span id="today-label"></span><button id="logout" class="text-button" hidden>断开连接</button></div></header>
+    <main id="content" aria-live="polite"><div class="loading">加载中…</div></main>
+    <footer class="page-footer"><span>阅伴</span><a href="https://github.com/wbshm/wxread" target="_blank" rel="noreferrer">GitHub ↗</a></footer>
   </div>
 </div>
 <dialog id="bind-dialog" class="modal">
   <button class="icon-button modal-close" aria-label="关闭" data-close="bind-dialog"><svg class="icon"><use href="#i-close"/></svg></button>
-  <div class="dialog-icon"><svg class="icon"><use href="#i-qr"/></svg></div><h2 id="bind-title">添加微信读书账户</h2><p class="muted">使用微信扫码，在手机上确认后即可绑定。</p>
+  <div class="dialog-icon"><svg class="icon"><use href="#i-qr"/></svg></div><h2 id="bind-title">添加账户</h2><p class="muted">微信扫码后确认登录。</p>
   <div class="tabs"><button class="active" data-bind-tab="qr">扫码绑定</button><button data-bind-tab="import">导入 cURL</button></div>
   <form id="bind-form">
-    <label>账户备注<input name="name" maxlength="80" placeholder="例如：我的账户 / 家人的账户"></label>
-    <div class="form-row"><label>每次目标时长（分钟）<input name="minutes" type="number" min="0.5" max="1440" step="0.5" value="20" required></label><label>通知邮箱（可选）<input name="email" type="email" placeholder="使用默认收件邮箱"></label></div>
-    <div id="qr-panel"><div id="qr-area" class="qr-area"><svg class="icon"><use href="#i-qr"/></svg><span>点击下方按钮生成二维码</span></div><p id="qr-status" class="qr-status">二维码仅用于本次绑定</p><button id="qr-start" class="button primary full" type="submit">生成扫码二维码<svg class="icon"><use href="#i-arrow"/></svg></button></div>
-    <div id="import-panel" hidden><label>微信读书 read 请求的 cURL<textarea name="curl" rows="5" placeholder="从浏览器开发者工具复制 cURL (bash)，粘贴在这里"></textarea></label><button class="button primary full" type="submit">导入并绑定</button></div>
+    <label>账户备注<input name="name" maxlength="80" placeholder="账户名称"></label>
+    <div class="form-row"><label>目标时长（分钟）<input name="minutes" type="number" min="0.5" max="1440" step="0.5" value="20" required></label><label>通知邮箱（可选）<input name="email" type="email" placeholder="使用默认收件邮箱"></label></div>
+    <div id="qr-panel"><div id="qr-area" class="qr-area"><svg class="icon"><use href="#i-qr"/></svg><span>点击生成二维码</span></div><p id="qr-status" class="qr-status"></p><button id="qr-start" class="button primary full" type="submit">生成二维码<svg class="icon"><use href="#i-arrow"/></svg></button></div>
+    <div id="import-panel" hidden><label>微信读书 read 请求的 cURL<textarea name="curl" rows="5" placeholder="粘贴 read 请求的 cURL"></textarea></label><button class="button primary full" type="submit">导入并绑定</button></div>
     <p id="bind-error" class="form-error" role="alert"></p>
-  </form><div class="privacy-note"><svg class="icon"><use href="#i-shield"/></svg>账户信息加密保存；扫码与阅读由 GitHub Actions 执行</div>
+  </form>
 </dialog>
-<dialog id="edit-dialog" class="modal compact"><button class="icon-button modal-close" aria-label="关闭" data-close="edit-dialog"><svg class="icon"><use href="#i-close"/></svg></button><h2>账户设置</h2><p class="muted">为这个账户安排合适的阅读计划。</p><form id="edit-form"><input name="id" type="hidden"><label>账户备注<input name="name" maxlength="80" required></label><label>每次目标时长（分钟）<input name="minutes" type="number" min="0.5" max="1440" step="0.5" required></label><label>通知邮箱<input name="email" type="email" placeholder="留空使用默认收件邮箱"></label><label class="toggle-label"><span>参加自动阅读计划</span><input name="enabled" type="checkbox" class="switch"></label><p id="edit-error" class="form-error"></p><button class="button primary full">保存设置</button></form><button id="delete-account" class="danger-link">移除这个账户</button></dialog>
+<dialog id="edit-dialog" class="modal compact"><button class="icon-button modal-close" aria-label="关闭" data-close="edit-dialog"><svg class="icon"><use href="#i-close"/></svg></button><h2>账户设置</h2><form id="edit-form"><input name="id" type="hidden"><label>账户备注<input name="name" maxlength="80" required></label><label>目标时长（分钟）<input name="minutes" type="number" min="0.5" max="1440" step="0.5" required></label><label>通知邮箱<input name="email" type="email" placeholder="留空使用默认收件邮箱"></label><label class="toggle-label"><span>自动阅读</span><input name="enabled" type="checkbox" class="switch"></label><p id="edit-error" class="form-error"></p><button class="button primary full">保存设置</button></form><button id="delete-account" class="danger-link">移除账户</button></dialog>
 <dialog id="auth-dialog" class="modal compact">
   <div class="dialog-icon"><svg class="icon"><use href="#i-shield"/></svg></div>
-  <h2>连接你的 GitHub 仓库</h2>
-  <p class="muted">使用仅授权此仓库的 Token。权限需要 Contents、Actions、Secrets 读写。</p>
+  <h2>连接仓库</h2>
+  <p class="muted">仓库权限：Contents、Actions、Secrets 读写。</p>
   <form id="auth-form">
     <label>仓库<input name="repository" placeholder="owner/wxread" required autocomplete="off"></label>
     <label><span class="token-field-title">GitHub Token<a id="token-settings-link" class="token-settings-link" href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener noreferrer">配置 Token ↗</a></span><input name="token" type="password" aria-label="GitHub Token" autocomplete="off" placeholder="github_pat_…" required></label>
     <label class="toggle-label"><span>保持当前标签页连接</span><input name="remember" type="checkbox" class="switch"></label>
-    <p class="section-description">勾选后将 Token 和临时解密密钥保存到本标签页的会话存储，12 小时内刷新可恢复。断开时清除；共享设备请勿勾选。未勾选时仅保留在页面内存中。</p>
-    <p class="section-description">首次连接会初始化一个加密密钥 Secret 和 wxread-state 状态分支。</p>
+    <p class="section-description">在当前标签页保存登录信息，12 小时内刷新可恢复；断开后清除。</p>
     <p id="auth-error" class="form-error" role="status"></p><button class="button primary full">连接仓库</button>
   </form>
 </dialog>
-<dialog id="confirm-dialog" class="modal compact"><h2>移除账户</h2><p class="muted">该账户将从阅读计划中移除，已有运行记录会保留。</p><div class="confirm-actions"><button class="button" data-close="confirm-dialog">取消</button><button class="button danger" id="confirm-delete">移除账户</button></div></dialog>
+<dialog id="confirm-dialog" class="modal compact"><h2>移除账户</h2><p class="muted">移除账户，保留运行记录。</p><div class="confirm-actions"><button class="button" data-close="confirm-dialog">取消</button><button class="button danger" id="confirm-delete">移除账户</button></div></dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 </body></html>

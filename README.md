@@ -159,8 +159,6 @@ GitHub 定时工作流可能延迟，长期无仓库活动时还可能停用，�
 
 ### 邮件发送
 
-GitHub 没有通用发信 API，[邮箱 API](https://docs.github.com/en/rest/users/emails)用于管理账户邮箱。
-
 - **只接收 Actions 运行结果提醒**：在 [GitHub 通知设置](https://github.com/settings/notifications)开启 Actions 的 Email 通知。[官方说明](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications)。
 - **接收各账户的阅读结果邮件**：在页面「计划与通知」配置 SMTP 服务器、端口、加密方式、用户名、授权码、发件邮箱和默认收件邮箱。邮件由 Actions 通过你配置的邮箱服务发送。
 
