@@ -10,7 +10,7 @@ from http.cookies import SimpleCookie
 
 # 阅读次数 默认40次/20分钟
 READ_NUM = int(os.getenv('READ_NUM') or 40)
-# 需要推送时可选，可选pushplus、wxpusher、telegram
+# 可选 email、pushplus、wxpusher、telegram、serverchan、webhook；多个渠道用英文逗号分隔。
 PUSH_METHOD = "" or os.getenv('PUSH_METHOD')
 # pushplus推送时需填
 PUSHPLUS_TOKEN = "" or os.getenv("PUSHPLUS_TOKEN")

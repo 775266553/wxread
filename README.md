@@ -69,7 +69,48 @@ GitHub 定时工作流可能延迟，长期无仓库活动时还可能停用，�
 
 时长由脚本按成功阅读请求计算，不是从微信读书排行榜拉取的官方统计。运行状态和通知依赖第三方接口及 GitHub Actions 的可用性。
 
-## 邮件发送
+## 消息通知
+
+页面「计划与通知」支持 **邮件、PushPlus、WxPusher、Telegram、Server酱、Webhook**。点击渠道标题展开设置，每个渠道都有独立开关、保存和测试按钮。可以同时开启多个渠道：所有开启的渠道分别发送每个账户的完成或失败结果；一个渠道失败不阻止其他渠道，运行记录会标出未送达的渠道。
+
+已有的 `PUSH_METHOD` 与通知 Secrets 会在旧加密状态升级时自动导入，已保存的页面设置优先，后续环境变量不会覆盖页面配置。未使用 Pages 的 CLI 也继续兼容原有环境变量，`PUSH_METHOD` 可以用英文逗号分隔多个渠道，例如 `email,pushplus,webhook`。
+
+| 渠道 | 页面填写内容 | 原有环境变量 / Secrets |
+| --- | --- | --- |
+| PushPlus | Token | `PUSHPLUS_TOKEN` |
+| WxPusher | 极简推送 SPT | `WXPUSHER_SPT` |
+| Telegram | Bot Token 和 Chat ID | `TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID` |
+| Server酱 | SendKey，支持 SCT 和 sctp 格式 | `SERVERCHAN_SPT` |
+| Webhook | 类型、HTTPS 地址，可选签名密钥和请求头 | `WEBHOOK_URL`、`WEBHOOK_SECRET`、`WEBHOOK_HEADERS`；`WEBHOOK_TYPE` 使用 Repository Variable |
+
+已保存的通知 Token、签名密钥、Webhook 地址和请求头都加密存储，页面只显示是否已保存，不返回原值。输入框留空时保留旧值；Webhook 的签名密钥和自定义请求头可使用对应的清除选项移除。测试会使用表单当前填写的配置，不自动保存。
+
+### Webhook 群机器人
+
+1. 在企业微信、飞书或钉钉的群聊里添加自定义机器人，复制其 Webhook 地址。
+2. 在控制台展开「Webhook 通知」，选择对应机器人类型，粘贴地址。
+3. 飞书、钉钉如果启用了签名校验，填写机器人的签名密钥；两种平台会使用各自的签名协议。企业微信无需额外签名密钥。
+4. 如机器人使用关键词验证，可配置「微信读书」，通知标题会包含该关键词。
+5. 点击「发送测试通知」，确认群里收到消息，然后开启并保存。
+
+三种机器人会分别使用平台要求的文本消息格式。响应中的业务错误码也会检查，HTTP 200 本身不代表机器人接受了消息。服务接受测试请求后仍应在接收端确认，部分通知服务异步投递消息。机器人配置参见 [企业微信文档](https://developer.work.weixin.qq.com/document/path/99110)、[飞书文档](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)、[钉钉文档](https://open.dingtalk.com/document/robots/customize-robot-security-settings)。
+
+自建服务可选择「通用 JSON Webhook」，以 HTTP POST 接收以下结构；自定义认证可以在可选请求头 JSON 中填写。请求超时或非 2xx 状态会视为发送失败，不跟随重定向。
+
+```json
+{
+  "event": "wxread.reading.completed",
+  "title": "微信读书 · 任务完成",
+  "content": "账户和阅读结果摘要",
+  "success": true,
+  "timestamp": "ISO 8601 时间",
+  "data": {"account_id": "账户标识", "account_name": "账户备注", "run_id": "任务标识", "status": "success", "completed": 40, "target": 40}
+}
+```
+
+失败事件为 `wxread.reading.failed`，测试事件为 `wxread.test`。Webhook 不包含 Cookie、SMTP 授权码或 GitHub Token。手动停止任务不发结果通知。
+
+### 邮件发送
 
 GitHub 没有通用发信 API，[邮箱 API](https://docs.github.com/en/rest/users/emails)用于管理账户邮箱。
 
@@ -82,7 +123,7 @@ SMTP 授权码加密保存，页面读取设置时只返回「是否已保存授
 
 ## 加密和数据范围
 
-账户 Cookie、SMTP 授权码、邮箱、备注和运行记录均加密后写入状态分支。页面指令使用仓库公钥加密；二维码及页面状态再使用当前浏览器的临时公钥加密，只有发起请求的页面能读取。
+账户 Cookie、通知 Token、Webhook 地址、签名密钥、请求头、SMTP 授权码、邮箱、备注和运行记录均加密后写入状态分支。页面指令使用仓库公钥加密；二维码及页面状态再使用当前浏览器的临时公钥加密，只有发起请求的页面能读取。
 
 公开 Pages 和公开仓库中可以看见页面代码、公钥、密文和工作流元数据，无法直接看到 Cookie 或邮件授权码。Token、私钥和 Cookie 不写入工作流输入或明文日志。状态分支的 Git 历史会保留旧密文；保护仓库访问权限和加密密钥。拥有仓库 Actions/代码管理权限的人应被视为可信管理者。
 
@@ -115,11 +156,13 @@ SMTP 授权码加密保存，页面读取设置时只返回「是否已保存授
 | `.github/workflows/deploy.yml` | 定时或手动阅读 |
 | `github_worker.py` | Actions 执行业务操作 |
 | `github_state.py` | 加密状态和 GitHub API |
+| `notifications.py` | 原有通知渠道、多渠道发送、Webhook 格式与签名 |
 | `requirements-actions.txt` | Actions 专用依赖 |
 
 ```bash
 pip install -r requirements.txt
 python -m unittest discover -s tests -v
+node tests/test_github_client.cjs
 ```
 
 浏览器预览静态界面可用任意静态文件服务器。生产使用 GitHub Pages，不需要运行 `web.py`、`scheduler.py` 或 Docker。

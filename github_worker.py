@@ -14,6 +14,7 @@ from config import convert, headers as default_headers
 from github_state import GitHubState, bind_account, overview, unseal, validate_id
 from jobs import JobManager
 from push import send_email, validate_email_settings
+from notifications import CHANNEL_LABELS, notification_settings, prepare_notification, send_channel
 from qr_login import QRLoginManager, QR_SESSION_SECONDS
 
 
@@ -60,6 +61,10 @@ def control_operation(state, operation, options):
         state['schedule']['enabled'] = options['enabled']
     elif operation == 'email':
         state['email'] = email_config(state, options)
+    elif operation == 'notifications':
+        channel = options.get('channel')
+        settings = state.setdefault('notifications', notification_settings())
+        settings[channel] = prepare_notification(channel, options.get('settings'), settings.get(channel))
     else:
         raise ValueError('操作无效')
 
@@ -127,6 +132,14 @@ def control():
             state, _ = repository.read()
             send_email('来自 GitHub Actions 的微信读书测试邮件。', email_config(state, options), subject='微信读书 · 通知测试')
             repository.respond(session_id, public_key, {'status':'success','message':'测试邮件已发送'})
+        elif operation == 'test-notification':
+            state, _ = repository.read()
+            channel = options.get('channel')
+            if channel not in notification_settings():
+                raise ValueError('通知渠道无效')
+            settings = prepare_notification(channel, options.get('settings'), state['notifications'].get(channel))
+            send_channel(channel, settings, '这是来自阅伴控制台的测试通知。', test=True)
+            repository.respond(session_id, public_key, {'status':'success','message':CHANNEL_LABELS[channel]+' 已接受测试请求，请检查接收端'})
         else:
             state = repository.mutate(lambda s: control_operation(s, operation, options))
             repository.respond(session_id, public_key, {'status':'success','overview':overview(state)})
@@ -161,6 +174,7 @@ def reading():
             mapping[imported['id']] = account
             local.set_status(imported['id'], account['status'])
         local.set_settings('email', initial['email'])
+        local.set_settings('notifications', initial['notifications'])
         jobs = JobManager(local)
         result = jobs.run_all()
         workflow_id = os.getenv('GITHUB_RUN_ID', '')

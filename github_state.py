@@ -16,6 +16,7 @@ from nacl.secret import SecretBox
 
 from account_store import AccountStore, now, validate_count, validate_email
 from push import email_settings
+from notifications import notification_settings, public_notifications
 
 STATE_BRANCH = 'wxread-state'
 STATE_FILE = 'state.enc.json'
@@ -92,7 +93,7 @@ class GitHubState:
     def defaults(self):
         return {'version': 1, 'accounts': [], 'runs': [], 'clients': [],
                 'schedule': {'enabled': True, 'cron': '7 17 * * *', 'timezone': 'UTC'},
-                'email': email_settings()}
+                'email': email_settings(), 'notifications': notification_settings()}
 
     def read(self):
         metadata, _ = self.api.get_file('control.json')
@@ -110,7 +111,9 @@ class GitHubState:
                     for account in state['accounts']:
                         account['enabled'] = bool(account['enabled'])
             return state, None
-        return json.loads(self.box.decrypt(base64.b64decode(value['ciphertext'], validate=True))), sha
+        state = json.loads(self.box.decrypt(base64.b64decode(value['ciphertext'], validate=True)))
+        state.setdefault('notifications', notification_settings())
+        return state, sha
 
     def mutate(self, function, publish=True):
         for attempt in range(5):
@@ -176,6 +179,7 @@ def overview(state):
             days[key]['running'] += run['status'] == 'running'
     return {'accounts': accounts, 'runs': sorted(state['runs'], key=lambda r:r['started_at'], reverse=True)[:100],
             'schedule': schedule, 'next_run': next_run.isoformat() if next_run else None, 'email': email,
+            'notifications': public_notifications(state.get('notifications', notification_settings())),
             'statistics': {'days': list(days.values()), 'today': days[today.isoformat()]}}
 
 

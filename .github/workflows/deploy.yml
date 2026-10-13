@@ -62,6 +62,10 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         SERVERCHAN_SPT:  ${{ secrets.SERVERCHAN_SPT }}
+        WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+        WEBHOOK_HEADERS: ${{ secrets.WEBHOOK_HEADERS }}
+        WEBHOOK_TYPE: ${{ vars.WEBHOOK_TYPE }}
         READ_NUM: ${{ vars.READ_NUM }}  # 使用 Repository Variables
         SMTP_HOST: ${{ secrets.SMTP_HOST }}
         SMTP_PORT: ${{ vars.SMTP_PORT }}

@@ -7,8 +7,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from account_store import now
-from config import PUSH_METHOD
-from push import email_settings, push, send_email
+from push import email_settings
+from notifications import CHANNEL_LABELS, notification_settings, send_notifications
 from reader import AuthenticationError, Cancelled, ReadClient
 
 
@@ -102,15 +102,14 @@ class JobManager:
                 self.active.pop(account['id'], None)
         if status in ('success', 'failed'):
             content = f"账户：{account['name']}\n结果：{message}\n完成次数：{completed}/{account['read_num']}\n时间：{now()}"
-            try:
-                settings = self.store.settings('email', email_settings())
-                if settings.get('enabled'):
-                    send_email(content, settings, is_success=status == 'success', recipient=account['email'] or None)
-                elif PUSH_METHOD and PUSH_METHOD.lower() != 'email':
-                    push(content, PUSH_METHOD, is_success=status == 'success')
-            except Exception:
-                self.store.update_run(run_id, message=message + '；邮件未送达，请检查通知设置')
-                logging.error('账户 %s 的通知发送失败', account['name'])
+            result = send_notifications(content, email_config=self.store.settings('email', email_settings()),
+                                        channels=self.store.settings('notifications', notification_settings()),
+                                        is_success=status == 'success', recipient=account['email'] or None,
+                                        context={'account_id':account['id'], 'account_name':account['name'],
+                                                 'run_id':run_id, 'status':status, 'completed':completed, 'target':account['read_num']})
+            if result['failed']:
+                failed = '、'.join(CHANNEL_LABELS[channel] for channel in result['failed'])
+                self.store.update_run(run_id, message=message + '；通知未送达：' + failed)
 
     def cancel(self, account_id):
         with self.lock:

@@ -13,6 +13,7 @@ from waitress import serve
 from account_store import AccountStore, validate_count, validate_email
 from jobs import JobManager, schedule_defaults, schedule_trigger
 from push import email_settings, send_email, validate_email_settings
+from notifications import notification_settings, prepare_notification, public_notifications, send_channel
 from qr_login import QRLoginManager
 
 
@@ -108,7 +109,8 @@ def create_app(store=None, jobs=None, logins=None):
         schedule = store.settings('schedule', schedule_defaults())
         return jsonify(accounts=store.accounts(), runs=store.runs(),
                        schedule=schedule, next_run=jobs.next_run(), statistics=store.statistics(schedule['timezone']),
-                       email=public_email())
+                       email=public_email(),
+                       notifications=public_notifications(store.settings('notifications', notification_settings())))
 
     @app.patch('/api/accounts/<account_id>')
     def update_account(account_id):
@@ -199,6 +201,32 @@ def create_app(store=None, jobs=None, logins=None):
         except Exception:
             return jsonify(error='测试邮件未发送成功，请检查 SMTP 服务器、授权码和收件邮箱'), 502
         return jsonify(ok=True)
+
+    def prepared_notification(values):
+        channel = values.get('channel')
+        if channel not in notification_settings():
+            raise ValueError('通知渠道无效')
+        current = store.settings('notifications', notification_settings())
+        settings = prepare_notification(channel, values.get('settings'), current.get(channel))
+        return channel, current, settings
+
+    @app.put('/api/settings/notifications')
+    def update_notifications():
+        channel, current, settings = prepared_notification(body())
+        current[channel] = settings
+        store.set_settings('notifications', current)
+        return jsonify(ok=True)
+
+    @app.post('/api/settings/notifications/test')
+    def test_notification():
+        channel, _, settings = prepared_notification(body())
+        try:
+            send_channel(channel, settings, '这是来自阅伴控制台的测试通知。', test=True)
+        except ValueError:
+            raise
+        except Exception:
+            return jsonify(error='测试请求未成功，请检查该渠道密钥、接收对象和网络'), 502
+        return jsonify(ok=True, message='测试请求已接受，请检查接收端')
 
     return app
 

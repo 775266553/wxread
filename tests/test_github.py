@@ -6,7 +6,7 @@ from unittest.mock import patch
 from nacl.public import PrivateKey, SealedBox
 
 from github_state import ConflictError, GitHubState, STATE_FILE, bind_account, encode, overview, seal, unseal
-from github_worker import control_operation, qr_binding, register_client
+from github_worker import control, control_operation, qr_binding, register_client
 
 
 class MemoryAPI:
@@ -140,6 +140,56 @@ class GitHubCase(unittest.TestCase):
         with self.assertRaises(ValueError):control_operation(state,'update',{'account_id':account_id,'read_num':0})
         control_operation(state,'delete',{'account_id':account_id})
         self.assertEqual(state['accounts'],[])
+
+    def test_notifications_are_encrypted_and_credentials_are_never_returned(self):
+        def apply(state):
+            control_operation(state,'notifications',{'channel':'pushplus','settings':{'enabled':True,'token':'PRIVATE-PUSH-TOKEN'}})
+            control_operation(state,'notifications',{'channel':'webhook','settings':{'enabled':True,'format':'feishu',
+                'url':'https://example.com/PRIVATE-HOOK','secret':'PRIVATE-SIGN-KEY','headers':'{"Authorization":"PRIVATE-HEADER"}'}})
+        self.store.mutate(apply)
+        state,_=self.store.read()
+        public=overview(state)
+        self.assertTrue(public['notifications']['pushplus']['has_token'])
+        self.assertTrue(public['notifications']['webhook']['has_secret'])
+        for token in ['PRIVATE-PUSH-TOKEN','PRIVATE-HOOK','PRIVATE-SIGN-KEY','PRIVATE-HEADER']:
+            self.assertNotIn(token,str(public))
+            self.assertNotIn(token.encode(),encode(self.api.files))
+        control_operation(state,'notifications',{'channel':'pushplus','settings':{'enabled':False,'token':''}})
+        self.assertEqual(state['notifications']['pushplus']['token'],'PRIVATE-PUSH-TOKEN')
+
+    def test_existing_encrypted_state_imports_legacy_notification_secrets(self):
+        import os
+        old=self.store.defaults();old.pop('notifications')
+        self.api.files[STATE_FILE]={'version':1,'ciphertext':base64.b64encode(self.store.box.encrypt(encode(old))).decode()}
+        self.api.revisions[STATE_FILE]='old'
+        with patch.dict(os.environ,{'PUSH_METHOD':'pushplus','PUSHPLUS_TOKEN':'IMPORTED-TOKEN'}):
+            state,_=self.store.read()
+            self.assertTrue(state['notifications']['pushplus']['enabled'])
+            self.assertEqual(state['notifications']['pushplus']['token'],'IMPORTED-TOKEN')
+            self.store.mutate(lambda s:control_operation(s,'notifications',{'channel':'pushplus','settings':{'enabled':False}}))
+            persisted,_=self.store.read()
+            self.assertFalse(persisted['notifications']['pushplus']['enabled'])
+
+    def test_actions_notification_test_uses_encrypted_command_without_saving_test_values(self):
+        import os
+        self.store.mutate(lambda state:control_operation(state,'notifications',{'channel':'webhook',
+            'settings':{'enabled':True,'format':'feishu','url':'https://example.com/SAVED-HOOK','secret':'SAVED-SIGN'}}))
+        client=PrivateKey.generate()
+        public=base64.b64encode(bytes(client.public_key)).decode()
+        payload=seal({'channel':'webhook','settings':{'enabled':False,'url':'https://example.com/TEST-HOOK','secret':''}},
+                     base64.b64encode(bytes(self.key.public_key)).decode())
+        environment={'CONTROL_SESSION':'d'*32,'CONTROL_PUBLIC_KEY':public,
+                     'CONTROL_OPERATION':'test-notification','CONTROL_PAYLOAD':payload}
+        with patch.dict(os.environ,environment), patch('github_worker.GitHubState',return_value=self.store), \
+             patch('github_worker.send_channel',return_value=True) as send:
+            self.assertEqual(control(),0)
+        self.assertEqual(send.call_args.args[1]['url'],'https://example.com/TEST-HOOK')
+        self.assertEqual(send.call_args.args[1]['secret'],'SAVED-SIGN')
+        self.assertTrue(send.call_args.kwargs['test'])
+        state,_=self.store.read()
+        self.assertEqual(state['notifications']['webhook']['url'],'https://example.com/SAVED-HOOK')
+        response=self.api.files['responses/'+'d'*32+'.json']['ciphertext']
+        self.assertEqual(unseal(response,client)['status'],'success')
 
 
 if __name__=='__main__':unittest.main()

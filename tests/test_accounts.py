@@ -165,7 +165,7 @@ class WebCase(BaseStoreCase):
 
     def test_import_update_and_validation(self):
         self.login()
-        response=self.client.post('/api/accounts/import',json={'curl':"curl https://weread.qq.com -b 'wr_vid=1; wr_skey=secret'",'name':'账户一'},headers=self.headers)
+        response=self.client.post('/api/accounts/import',json={'curl':"curl https://weread.qq.com -b 'wr_vid=1; wr_skey=PRIVATE-LOGIN-COOKIE'",'name':'账户一'},headers=self.headers)
         self.assertEqual(response.status_code,200)
         account=response.get_json()
         for value in (0,-1,2.5,True,2881):
@@ -173,7 +173,7 @@ class WebCase(BaseStoreCase):
             self.assertEqual(response.status_code,400)
         response=self.client.patch('/api/accounts/'+account['id'],json={'read_num':4,'email':'one@example.com'},headers=self.headers)
         self.assertEqual(response.get_json()['read_num'],4)
-        self.assertNotIn('secret',self.client.get('/api/overview').get_data(as_text=True))
+        self.assertNotIn('PRIVATE-LOGIN-COOKIE',self.client.get('/api/overview').get_data(as_text=True))
         self.assertEqual(self.client.patch('/api/accounts/missing',json={},headers=self.headers).status_code,404)
 
     def test_email_secret_is_not_exposed_and_blank_keeps_password(self):
@@ -196,6 +196,23 @@ class WebCase(BaseStoreCase):
         response=self.client.put('/api/settings/schedule',json={**good,'cron':'bad'},headers=self.headers)
         self.assertEqual(response.status_code,400)
         self.assertEqual(self.store.settings('schedule'),good)
+
+    def test_notification_settings_preserve_credentials_and_tests_do_not_save(self):
+        self.login()
+        values={'channel':'webhook','settings':{'enabled':True,'url':'https://example.com/PRIVATE-HOOK',
+                'format':'feishu','secret':'PRIVATE-SIGNATURE','headers':'{"Authorization":"PRIVATE-HEADER"}'}}
+        self.assertEqual(self.client.put('/api/settings/notifications',json=values,headers=self.headers).status_code,200)
+        values['settings'].update(url='',secret='',headers='')
+        self.assertEqual(self.client.put('/api/settings/notifications',json=values,headers=self.headers).status_code,200)
+        current=self.store.settings('notifications')['webhook']
+        self.assertEqual(current['secret'],'PRIVATE-SIGNATURE')
+        for token in ['PRIVATE-HOOK','PRIVATE-SIGNATURE','PRIVATE-HEADER']:
+            self.assertNotIn(token,self.client.get('/api/overview').get_data(as_text=True))
+        values['settings']['url']='https://example.com/NEW-TEST-HOOK'
+        with patch('web.send_channel',return_value=True) as send:
+            self.assertEqual(self.client.post('/api/settings/notifications/test',json=values,headers=self.headers).status_code,200)
+        self.assertEqual(send.call_args.args[1]['url'],'https://example.com/NEW-TEST-HOOK')
+        self.assertEqual(self.store.settings('notifications')['webhook']['url'],'https://example.com/PRIVATE-HOOK')
 
     def test_local_mode_rejects_remote_or_rebound_hosts(self):
         with patch.dict(os.environ,{'ADMIN_TOKEN':''}):app=create_app(self.store)

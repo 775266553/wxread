@@ -6,7 +6,7 @@ on:
     inputs:
       operation:
         type: choice
-        options: [inspect, qr, import, update, delete, schedule, email, test-email]
+        options: [inspect, qr, import, update, delete, schedule, email, test-email, notifications, test-notification]
         required: true
       session_id:
         required: true
@@ -51,6 +51,15 @@ jobs:
           CONTROL_PAYLOAD: ${{ inputs.payload }}
           PLAYWRIGHT_CHANNEL: chrome
           PUSH_METHOD: ${{ secrets.PUSH_METHOD }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WXPUSHER_SPT: ${{ secrets.WXPUSHER_SPT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SERVERCHAN_SPT: ${{ secrets.SERVERCHAN_SPT }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          WEBHOOK_HEADERS: ${{ secrets.WEBHOOK_HEADERS }}
+          WEBHOOK_TYPE: ${{ vars.WEBHOOK_TYPE }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ vars.SMTP_PORT }}
           SMTP_SECURITY: ${{ vars.SMTP_SECURITY }}
