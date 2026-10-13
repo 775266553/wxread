@@ -1,5 +1,6 @@
 """Capture the real WeRead login QR in a fresh, isolated browser context."""
 import base64
+import hashlib
 import logging
 import os
 import re
@@ -7,6 +8,16 @@ import threading
 import time
 import uuid
 from urllib.parse import unquote
+
+
+QR_SESSION_SECONDS = 360
+QR_READY_SCRIPT = """() => {
+    const node = document.querySelector('.wr_login_modal_qr_img');
+    if (!node || node.classList.contains('wr_login_modal_qr_img_expired')) return false;
+    if (node.tagName === 'IMG') return node.complete && node.naturalWidth > 0;
+    if (node.tagName === 'CANVAS') return node.width > 0 && node.height > 0;
+    return Boolean(node.querySelector('path, rect, canvas, img'));
+}"""
 
 
 class QRLoginManager:
@@ -21,7 +32,7 @@ class QRLoginManager:
             self.store.account(options['account_id'])
         with self.lock:
             self.sessions = {key: value for key, value in self.sessions.items() if time.time() - value['created'] < 900}
-            if sum(s['status'] in ('starting', 'waiting') for s in self.sessions.values()) >= 2:
+            if sum(s['status'] in ('starting', 'waiting', 'refreshing') for s in self.sessions.values()) >= 2:
                 raise ValueError('已有两个扫码窗口，请先关闭或完成绑定')
             session_id = uuid.uuid4().hex
             self.sessions[session_id] = {'status': 'starting', 'message': '正在加载微信读书登录页…',
@@ -67,19 +78,19 @@ class QRLoginManager:
                     context.route(re.compile(r'^https?://localhost\.weixin\.qq\.com'), lambda route: route.abort())
                     page = context.new_page()
                     page.goto('https://weread.qq.com/', wait_until='domcontentloaded', timeout=45000)
-                    page.wait_for_function("() => Boolean(document.querySelector('#__nuxt')?.__vue_app__)", timeout=45000)
-                    # These selectors are present on the current official login page.
                     qr = page.locator('.wr_login_modal_qr_wrapper').first
                     if not qr.is_visible():
                         page.get_by_text('登录', exact=True).first.click(timeout=15000)
                     modal = page.locator('.wr_login_modal_wrapper')
                     modal.wait_for(state='visible', timeout=30000)
                     qr.wait_for(state='visible', timeout=30000)
-                    qr.locator('.wr_login_modal_qr_img').wait_for(state='visible', timeout=30000)
-                    page.wait_for_function("() => { const i = document.querySelector('.wr_login_modal_qr_img'); return i && i.complete && i.naturalWidth > 0; }", timeout=30000)
+                    image = qr.locator('.wr_login_modal_qr_img').first
+                    expired_overlay = page.locator('.wr_login_modal_qr_overlay').first
                     with self.lock:
                         cancel = self.sessions[session_id]['cancel']
-                    deadline = time.monotonic() + 180
+                    deadline = time.monotonic() + QR_SESSION_SECONDS
+                    fingerprint = None
+                    version = 0
                     while time.monotonic() < deadline and not cancel.is_set():
                         cookies = {cookie['name']: cookie['value'] for cookie in context.cookies('https://weread.qq.com/')}
                         if cookies.get('wr_vid') and cookies.get('wr_skey') and not modal.is_visible():
@@ -93,17 +104,28 @@ class QRLoginManager:
                                 account_id=options.get('account_id'))
                             self.update(session_id, status='success', message='账户绑定成功', qr=None, account=account)
                             return
+                        if expired_overlay.is_visible():
+                            self.update(session_id, status='refreshing', message='二维码已失效，正在自动更新…', qr=None)
+                            # Refresh inside the existing official login session; avoid another Actions startup.
+                            expired_overlay.click(timeout=5000)
+                            fingerprint = None
                         if qr.is_visible():
-                            screenshot = base64.b64encode(qr.screenshot(timeout=5000)).decode()
-                            expired = page.locator('.wr_login_modal_qr_img_expired').is_visible()
-                            if expired:
-                                self.update(session_id, status='expired', message='二维码已过期，请刷新二维码', qr=None)
-                                return
-                            self.update(session_id, status='waiting', message='使用微信扫一扫，并在手机上确认登录', qr='data:image/png;base64,' + screenshot)
-                        if cancel.wait(2):
+                            if image.is_visible() and page.evaluate(QR_READY_SCRIPT):
+                                content = image.evaluate("node => node.tagName === 'CANVAS' ? node.toDataURL() : node.tagName === 'IMG' ? node.currentSrc : node.innerHTML")
+                                current = hashlib.sha256(content.encode()).hexdigest()
+                                if current != fingerprint:
+                                    screenshot = base64.b64encode(qr.screenshot(timeout=5000)).decode()
+                                    if not page.evaluate(QR_READY_SCRIPT):
+                                        continue
+                                    version += 1
+                                    self.update(session_id, status='waiting',
+                                                message='使用微信扫一扫，并在手机上确认登录；失效后会自动更新',
+                                                qr='data:image/png;base64,' + screenshot, qr_version=version)
+                                    fingerprint = current
+                        if cancel.wait(1):
                             break
                     self.update(session_id, status='cancelled' if cancel.is_set() else 'expired',
-                                message='扫码已关闭' if cancel.is_set() else '二维码已过期，请刷新二维码', qr=None)
+                                message='扫码已关闭' if cancel.is_set() else '本次扫码窗口已结束，请重新生成二维码', qr=None)
         except ValueError as exc:
             self.update(session_id, status='failed', message=str(exc), qr=None)
         except Exception as exc:

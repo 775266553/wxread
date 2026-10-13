@@ -63,18 +63,29 @@ class GitHubClient {
     const encrypted=this.encrypt(payload,this.serverKey);
     if(encrypted.length>60000)throw new Error('配置内容过大，请分批导入账户');
     await this.request('/actions/workflows/control.yml/dispatches','POST',{ref:this.branch,inputs:{operation,session_id:id,public_key:key,payload:encrypted}});
-    this.commands.set(id,{id,operation,created:Date.now(),runId:null});
+    this.commands.set(id,{id,operation,created:Date.now(),runId:null,run:null,lastRunCheck:0,completedSeenAt:null});
     return id;
   }
   async state(id) {
     const command=this.commands.get(id);
     if(!command)throw new Error('操作会话已结束，请重新提交');
     const file=await this.file('responses/'+id+'.json');
-    if(file){const state=this.decrypt(file.value.ciphertext);if(state.overview)this.data=state.overview;if(state.expires_at && ['starting','waiting'].includes(state.status) && Date.now()>new Date(state.expires_at).getTime())return {status:'expired',message:'扫码会话已过期，请重新生成二维码'};return state;}
-    const runs=await this.request('/actions/workflows/control.yml/runs?event=workflow_dispatch&per_page=30');
-    const run=runs.workflow_runs.find(r=>r.display_title==='wxread-control '+id);
-    if(run){command.runId=run.id;if(run.status==='completed')throw new Error(`Actions 已结束（${run.conclusion}），未返回结果。请打开运行记录检查工作流。`);}
-    return {status:'starting',message:run?.status==='waiting'?'Actions 正在等待环境审批，请到 GitHub Actions 批准此运行…':run?.status==='in_progress'?'Actions 正在准备浏览器和账户配置…':'等待 GitHub Actions 启动，请保持页面打开…'};
+    const state=file?this.decrypt(file.value.ciphertext):null;
+    if(state?.overview)this.data=state.overview;
+    if(state && ['success','failed','expired','cancelled'].includes(state.status))return state;
+    if(Date.now()-command.lastRunCheck>=10000){
+      const runs=await this.request('/actions/workflows/control.yml/runs?event=workflow_dispatch&per_page=30');
+      command.run=runs.workflow_runs.find(r=>r.display_title==='wxread-control '+id)||null;
+      command.lastRunCheck=Date.now();if(command.run)command.runId=command.run.id;
+    }
+    const run=command.run;
+    if(run?.status==='completed'){
+      if(run.conclusion==='cancelled')return {status:'cancelled',message:'扫码任务已取消，请重新生成二维码',qr:null};
+      command.completedSeenAt ??= Date.now();
+      if(Date.now()-command.completedSeenAt<10000)return {status:'refreshing',message:'任务已结束，正在读取最终结果…',qr:null};
+      return {status:'failed',message:`Actions 已结束（${run.conclusion}），未返回结果。请打开运行记录检查工作流。`,qr:null};
+    }
+    return state||{status:'starting',qr:null,message:run?.status==='waiting'?'Actions 正在等待环境审批，请到 GitHub Actions 批准此运行…':run?.status==='in_progress'?'Actions 正在准备浏览器和账户配置…':'等待 GitHub Actions 启动，请保持页面打开…'};
   }
   async command(operation,options={},progress=()=>{}) {
     const id=await this.start(operation,options),deadline=Date.now()+12*60*1000;

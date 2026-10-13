@@ -6,7 +6,7 @@ from unittest.mock import patch
 from nacl.public import PrivateKey, SealedBox
 
 from github_state import ConflictError, GitHubState, STATE_FILE, bind_account, encode, overview, seal, unseal
-from github_worker import control_operation, register_client
+from github_worker import control_operation, qr_binding, register_client
 
 
 class MemoryAPI:
@@ -61,6 +61,42 @@ class GitHubCase(unittest.TestCase):
         self.assertEqual(unseal(value,client),{'qr':'QR-SECRET'})
         with self.assertRaises(Exception):unseal(value,PrivateKey.generate())
         self.assertNotIn(b'QR-SECRET',encode(self.api.files))
+
+    def test_qr_worker_publishes_changed_qr_without_status_change(self):
+        class Manager:
+            closed = False
+
+            def __init__(self, local):
+                self.local = local
+
+            def start(self, options):
+                account = self.local.bind({'wr_vid':'test','wr_skey':'test-cookie'}, {}, read_num=2)
+                self.states = iter([
+                    {'status':'starting','qr':None},
+                    {'status':'waiting','qr':'first','qr_version':1},
+                    {'status':'waiting','qr':'first','qr_version':1},
+                    {'status':'waiting','qr':'second','qr_version':2},
+                    {'status':'success','account':account},
+                ])
+                return 'local-session'
+
+            def state(self, _):
+                return next(self.states)
+
+            def close(self):
+                Manager.closed = True
+
+        client = PrivateKey.generate()
+        public = base64.b64encode(bytes(client.public_key)).decode()
+        with patch('github_worker.QRLoginManager', Manager), patch('github_worker.time.sleep'), \
+             patch.object(self.store, 'respond', wraps=self.store.respond) as responses:
+            qr_binding(self.store, 'c'*32, public, {'read_num':2})
+        waiting = [call.args[2] for call in responses.call_args_list if call.args[2]['status']=='waiting']
+        self.assertEqual([r['qr'] for r in waiting], ['first','second'])
+        self.assertTrue(all('expires_at' not in r for r in waiting))
+        self.assertTrue(Manager.closed)
+        response = self.api.files['responses/'+'c'*32+'.json']['ciphertext']
+        self.assertEqual(unseal(response, client)['status'], 'success')
 
     def test_rebind_preserves_settings_and_rejects_other_account(self):
         state=self.store.defaults()

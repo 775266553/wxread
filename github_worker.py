@@ -14,7 +14,7 @@ from config import convert, headers as default_headers
 from github_state import GitHubState, bind_account, overview, unseal, validate_id
 from jobs import JobManager
 from push import send_email, validate_email_settings
-from qr_login import QRLoginManager
+from qr_login import QRLoginManager, QR_SESSION_SECONDS
 
 
 def find_account(state, account_id):
@@ -75,18 +75,18 @@ def register_client(state, session_id, public_key):
 def qr_binding(repository, session_id, public_key, options):
     with tempfile.TemporaryDirectory() as directory:
         local = AccountStore(directory)
-        initial, _ = repository.read()
         target = options.get('account_id')
         login_options = {k:options[k] for k in ('name','read_num','email') if k in options}
         if target:
+            initial, _ = repository.read()
             account = find_account(initial, target)
             imported = local.bind(account['cookies'], account['headers'], account['name'], account['read_num'], account['email'])
             login_options['account_id'] = imported['id']
         manager = QRLoginManager(local)
         login = manager.start(login_options)
-        last_status = None
+        last_snapshot = None
         try:
-            deadline = time.monotonic() + 300
+            deadline = time.monotonic() + QR_SESSION_SECONDS + 90
             while time.monotonic() < deadline:
                 result = manager.state(login)
                 if result['status'] == 'success':
@@ -97,11 +97,12 @@ def qr_binding(repository, session_id, public_key, options):
                 if result['status'] in ('failed','expired','cancelled'):
                     repository.respond(session_id, public_key, result)
                     return
-                # One initial QR snapshot plus terminal status; do not create a commit every two seconds.
-                if result['status'] != last_status and (result['status'] != 'waiting' or result.get('qr')):
-                    repository.respond(session_id, public_key, {**result, 'expires_at':(datetime.now(timezone.utc)+timedelta(seconds=180)).isoformat()})
-                    last_status = result['status']
-                time.sleep(2)
+                # Publish every new QR, even when a quick refresh stays in the waiting status.
+                snapshot = (result['status'], result.get('qr_version'))
+                if snapshot != last_snapshot and (result['status'] != 'waiting' or result.get('qr')):
+                    repository.respond(session_id, public_key, result)
+                    last_snapshot = snapshot
+                time.sleep(1)
             repository.respond(session_id, public_key, {'status':'expired','message':'扫码超时，请重新生成二维码'})
         finally:
             manager.close()
@@ -119,7 +120,7 @@ def control():
         client = options.pop('_client', None)
         if client:
             validate_id(client['id'])
-            repository.mutate(lambda s: register_client(s, client['id'], client['public_key']))
+            repository.mutate(lambda s: register_client(s, client['id'], client['public_key']), publish=False)
         if operation == 'qr':
             qr_binding(repository, session_id, public_key, options)
         elif operation == 'test-email':
