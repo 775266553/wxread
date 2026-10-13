@@ -4,6 +4,7 @@ const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let data = null, view = 'overview', loginSession = null, loginTimer = null, bindTab = 'qr', bindAccount = null, pollTimer = null;
+let refreshPromise=null,refreshVersion=null,pollVersion=0,polling=false;
 const labels = {overview:'总览',accounts:'账户管理',history:'运行记录',settings:'计划与通知'};
 const statusLabels = {success:'已完成',failed:'失败',running:'运行中',queued:'排队中',cancelled:'已停止',interrupted:'已中断'};
 let toastTimer;
@@ -12,7 +13,7 @@ async function api(path, method = 'GET', body = {}) {
   const client=window.githubClient;
   try {
     if(path==='/session')return {authenticated:client.connected,requires_auth:true};
-    if(path==='/auth'){await client.connect(body.repository,body.token,message=>$('#auth-error').textContent=message);$('#auth-error').textContent='';return {ok:true};}
+    if(path==='/auth'){const result=await client.connect(body.repository,body.token,message=>$('#auth-error').textContent=message,body.remember);$('#auth-error').textContent='';return result;}
     if(path==='/logout'){client.disconnect();return {ok:true};}
     if(path==='/overview')return await client.overview();
     if(path==='/run-all')return await client.run();
@@ -28,7 +29,7 @@ async function api(path, method = 'GET', body = {}) {
     if(path==='/settings/notifications')return await client.command('notifications',body);
     if(path==='/settings/notifications/test')return await client.command('test-notification',body);
     throw new Error('此操作在 Pages 模式下不可用');
-  }catch(error){if(!client.connected && path!=='/auth'){pausePolling();openAuth();}throw error;}
+  }catch(error){if(!client.connected && path!=='/auth' && error.code!=='SESSION_CHANGED'){pausePolling();data=null;loginSession=null;clearTimeout(loginTimer);$('#bind-dialog').close();$('#content').innerHTML='<div class="loading">连接后查看你的阅读空间</div>';openAuth(error.message);}throw error;}
 }
 const tz = () => 'Asia/Shanghai';
 const day = date => new Date(date).toLocaleDateString('sv-SE',{timeZone:tz()});
@@ -65,9 +66,34 @@ function renderSettings() {
 }
 function render() {if(!data) return;$('#nav-count').textContent=data.accounts.length;$('#breadcrumb').textContent=labels[view];$$('[data-view].nav-item').forEach(b=>b.classList.toggle('active',b.dataset.view===view));({overview:renderOverview,accounts:renderAccounts,history:renderHistory,settings:renderSettings})[view]();}
 function setView(next) {view=next;render();window.scrollTo({top:0});}
-async function refresh(force=false) {try {data=await api('/overview');$('#connection').textContent='GitHub 已连接';if(force || view!=='settings') render();}catch(e){$('#connection').textContent='连接中断';if(force) toast(e.message,true);}}
-function pausePolling() {clearInterval(pollTimer);pollTimer=null;}
-function startPolling() {pausePolling();pollTimer=setInterval(()=>refresh(),10000);}
+async function refresh(force=false) {
+  const client=window.githubClient,version=client.sessionVersion;
+  if(refreshVersion!==version)refreshPromise=null;
+  if(!refreshPromise){
+    refreshVersion=version;
+    const task=(async()=>{
+      try {
+        const result=await api('/overview');if(version!==client.sessionVersion || !client.connected)return false;
+        data=result;$('#connection').textContent='GitHub 已连接';$('#connection').title='';return true;
+      }catch(e){
+        if(e.code==='SESSION_CHANGED' || version!==client.sessionVersion)return false;
+        $('#connection').textContent=!client.connected?'需要重新连接':e.code==='RATE_LIMIT'?'限流中 · 等待恢复':e.code==='PERMISSION'?'需要检查仓库权限':'网络波动 · 自动重试';
+        $('#connection').title=e.message;if(force)toast(e.message,true);return false;
+      }
+    })();
+    refreshPromise=task;task.finally(()=>{if(refreshPromise===task)refreshPromise=null;});
+  }
+  const ok=await refreshPromise;if(ok && (force || view!=='settings'))render();return ok;
+}
+function pausePolling() {polling=false;pollVersion++;clearTimeout(pollTimer);pollTimer=null;}
+function startPolling(immediate=false) {
+  pausePolling();if(!window.githubClient.connected)return;polling=true;const version=pollVersion;
+  const schedule=delay=>{if(version===pollVersion && polling && document.visibilityState!=='hidden')pollTimer=setTimeout(tick,delay);};
+  const tick=async()=>{if(version!==pollVersion || !polling)return;const ok=await refresh();if(window.githubClient.connected)schedule(Math.max(ok?10000:30000,window.githubClient.retryAt-Date.now() || 0));};
+  schedule(immediate?0:10000);
+}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){clearTimeout(pollTimer);pollTimer=null;}else if(polling)startPolling(true);});
+window.addEventListener('online',()=>{if(window.githubClient.connected)startPolling(true);});
 async function closeQR() {clearTimeout(loginTimer);loginTimer=null;if(loginSession){const id=loginSession;loginSession=null;try{await api('/login/'+id,'DELETE');}catch{}}}
 function openBind(account=null) {closeQR();bindAccount=account;bindTab='qr';$('#bind-form').reset();$('#bind-title').textContent=account?'重新绑定账户':'添加微信读书账户';$('#bind-form').elements.name.value=account?.name || '';$('#bind-form').elements.minutes.value=account?account.read_num/2:20;$('#bind-form').elements.email.value=account?.email || '';$('#bind-error').textContent='';$('#qr-area').innerHTML=`${icon('qr')}<span>点击生成，等待 Actions 启动浏览器</span>`;$('#qr-status').textContent='保持页面打开；二维码失效后会自动更新';$('#qr-start').disabled=false;$('#qr-start').textContent='生成扫码二维码';$('#bind-form').elements.name.disabled=!!account;$('#bind-form').elements.minutes.disabled=!!account;$('#bind-form').elements.email.disabled=!!account;$$('[data-bind-tab]').forEach(b=>{b.hidden=!!account&&b.dataset.bindTab==='import';b.classList.toggle('active',b.dataset.bindTab==='qr');});$('#qr-panel').hidden=false;$('#import-panel').hidden=true;$('#bind-dialog').showModal();}
 function renderQRState(state) {
@@ -76,15 +102,16 @@ function renderQRState(state) {
     let image=$('#qr-area img');if(!image){$('#qr-area').innerHTML='<img alt="微信读书官方登录二维码">';image=$('#qr-area img');}
     if(image.getAttribute('src')!==state.qr)image.src=state.qr;
   }else{
-    $('#qr-area').innerHTML=`${icon('qr')}<span>${state.status==='refreshing'?'正在更新二维码…':state.status==='starting'?'等待扫码任务准备完成…':'本次二维码已结束'}</span>`;
+    $('#qr-area').innerHTML=`${icon('qr')}<span>${state.status==='retrying'?'网络恢复后继续读取二维码…':state.status==='refreshing'?'正在更新二维码…':state.status==='starting'?'等待扫码任务准备完成…':'本次二维码已结束'}</span>`;
   }
 }
-async function pollQR(id) {if(loginSession!==id || !$('#bind-dialog').open)return;try {const state=await api('/login/'+id);if(loginSession!==id)return;renderQRState(state);if(state.status==='success'){loginSession=null;$('#bind-dialog').close();toast('账户已绑定');await refresh(true);return;}if(['failed','expired','cancelled'].includes(state.status)){$('#bind-error').textContent=state.message;$('#qr-start').disabled=false;$('#qr-start').textContent='重新生成二维码';return;}loginTimer=setTimeout(()=>pollQR(id),state.status==='starting'?2000:1200);}catch(e){renderQRState({status:'failed',message:e.message});$('#bind-error').textContent=e.message;$('#qr-start').disabled=false;}}
+async function pollQR(id) {if(loginSession!==id || !$('#bind-dialog').open)return;try {const state=await api('/login/'+id);if(loginSession!==id)return;renderQRState(state);if(state.status==='success'){loginSession=null;$('#bind-dialog').close();toast('账户已绑定');await refresh(true);return;}if(['failed','expired','cancelled'].includes(state.status)){$('#bind-error').textContent=state.message;$('#qr-start').disabled=false;$('#qr-start').textContent='重新生成二维码';return;}loginTimer=setTimeout(()=>pollQR(id),state.status==='starting'?2000:1200);}catch(e){if(loginSession!==id)return;if(e.retryable && window.githubClient.connected){renderQRState({status:'retrying',message:e.message});loginTimer=setTimeout(()=>pollQR(id),Math.max(5000,window.githubClient.retryAt-Date.now() || 0));return;}renderQRState({status:'failed',message:e.message});$('#bind-error').textContent=e.message;$('#qr-start').disabled=false;}}
 function editAccount(account) {const f=$('#edit-form');f.elements.id.value=account.id;f.elements.name.value=account.name;f.elements.minutes.value=account.read_num/2;f.elements.email.value=account.email;f.elements.enabled.checked=account.enabled;$('#edit-error').textContent='';$('#edit-dialog').showModal();}
 function emailValues(){const f=$('#email-form'), values=Object.fromEntries(new FormData(f));values.enabled=f.elements.enabled.checked;return values;}
-function openAuth() {if(!$('#auth-dialog').open)$('#auth-dialog').showModal();}
+function openAuth(message='') {$('#logout').hidden=true;$('#connection').textContent=message?'需要重新连接':'尚未连接';if(message)$('#auth-error').textContent=message;if(!$('#auth-dialog').open)$('#auth-dialog').showModal();}
 $('#auth-dialog').addEventListener('cancel',e=>e.preventDefault());
 document.addEventListener('click',async e=>{
+  if(e.target.closest('.brand')){e.preventDefault();setView('overview');return;}
   const close=e.target.closest('[data-close]');if(close){$('#'+close.dataset.close).close();return;}
   const nav=e.target.closest('.nav-item');if(nav){setView(nav.dataset.view);return;}
   const tab=e.target.closest('[data-bind-tab]');if(tab){await closeQR();bindTab=tab.dataset.bindTab;$$('[data-bind-tab]').forEach(b=>b.classList.toggle('active',b===tab));$('#qr-panel').hidden=bindTab!=='qr';$('#import-panel').hidden=bindTab!=='import';$('#bind-error').textContent='';return;}
@@ -97,7 +124,7 @@ document.addEventListener('click',async e=>{
 document.addEventListener('submit',async e=>{
   e.preventDefault();const f=e.target, formId=e.target.getAttribute('id'), submit=e.submitter || $('button[type=submit],button:not([type])',f);if(submit)submit.disabled=true;
   try {
-    if(formId==='auth-form'){await api('/auth','POST',{token:f.elements.token.value,repository:f.elements.repository.value.trim()});f.elements.token.value='';$('#auth-dialog').close();$('#logout').hidden=false;await refresh(true);startPolling();}
+    if(formId==='auth-form'){pausePolling();const result=await api('/auth','POST',{token:f.elements.token.value,repository:f.elements.repository.value.trim(),remember:f.elements.remember.checked});f.elements.token.value='';$('#auth-dialog').close();$('#logout').hidden=false;if(result?.saved===false)toast('此浏览器无法保存标签页会话，当前连接仍可使用；刷新后需要重新连接',true);await refresh(true);startPolling();}
     if(formId==='bind-form'){const options={name:f.elements.name.value,read_num:Number(f.elements.minutes.value)*2,email:f.elements.email.value};if(bindAccount)options.account_id=bindAccount.id;
       if(bindTab==='import'){await api('/accounts/import','POST',{...options,curl:f.elements.curl.value});f.reset();$('#bind-dialog').close();toast('账户已导入');await refresh(true);}else{await closeQR();$('#bind-error').textContent='';renderQRState({status:'starting',message:'正在启动扫码任务，请保持页面打开…'});$('#qr-start').disabled=true;const result=await api('/login','POST',options);loginSession=result.session_id;pollQR(loginSession);}
     }
@@ -116,7 +143,7 @@ $('#confirm-delete').addEventListener('click',async()=>{const b=$('#confirm-dele
 $('#logout').addEventListener('click',async()=>{await api('/logout','POST',{});pausePolling();data=null;$('#content').innerHTML='<div class="loading">登录后查看你的阅读空间</div>';openAuth();});
 $('#bind-dialog').addEventListener('close',closeQR);
 $('#today-label').textContent=new Date().toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'long'});
-(async()=>{try{await sodium.ready;const state=await api('/session');$('#logout').hidden=!state.requires_auth;if(!state.authenticated){openAuth();return;}await refresh(true);startPolling();}catch(e){toast(e.message,true);}})();
+(async()=>{try{await sodium.ready;$('#connection').textContent='正在恢复连接';await window.githubClient.restore();if(!window.githubClient.connected){$('#connection').textContent='尚未连接';openAuth();return;}$('#logout').hidden=false;await refresh(true);startPolling();}catch(e){if(window.githubClient.connected){$('#logout').hidden=false;await refresh(true);startPolling();}else{$('#connection').textContent='需要重新连接';openAuth(e.message);}}})();
 
 const guessedRepo=location.hostname.endsWith('.github.io')?location.hostname.split('.')[0]+'/'+(location.pathname.split('/').filter(Boolean)[0]||location.hostname):'wbshm/wxread';
-$('#auth-form').elements.repository.value=localStorage.getItem('wxread-repository')||guessedRepo;
+try{$('#auth-form').elements.repository.value=localStorage.getItem('wxread-repository')||guessedRepo;}catch{$('#auth-form').elements.repository.value=guessedRepo;}

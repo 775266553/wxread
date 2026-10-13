@@ -1,42 +1,105 @@
-/* GitHub-only control plane. No API server, browser storage of Tokens, or plaintext repository state. */
+/* GitHub-only control plane. Session storage is used only with explicit opt-in. */
 'use strict';
 class GitHubClient {
-  constructor() { this.token='';this.repository='';this.branch='';this.pair=null;this.clientId='';this.commands=new Map();this.data=null;this.pendingReading=null; }
+  constructor() { this.token='';this.repository='';this.branch='';this.pair=null;this.clientId='';this.commands=new Map();this.data=null;this.pendingReading=null;this.sessionVersion=0;this.retryAt=0;this.remember=false;this.sessionExpires=0;this.registeredAt=0;this.renewal=null; }
   get connected() {return Boolean(this.token && this.pair && this.branch);}
   id() {return crypto.randomUUID().replaceAll('-','');}
   b64(value) {return sodium.to_base64(value,sodium.base64_variants.ORIGINAL);}
   bytes(value) {return sodium.from_base64(value,sodium.base64_variants.ORIGINAL);}
   encrypt(value,key) {return this.b64(sodium.crypto_box_seal(sodium.from_string(JSON.stringify(value)),this.bytes(key)));}
   decrypt(value) {return JSON.parse(sodium.to_string(sodium.crypto_box_seal_open(this.bytes(value),this.pair.publicKey,this.pair.privateKey)));}
+  error(message,code,retryable=false) {return Object.assign(new Error(message),{code,retryable});}
+  assertSession(version) {if(version!==this.sessionVersion)throw this.error('连接已更换，已忽略旧请求','SESSION_CHANGED');}
+  delay(ms) {return new Promise(resolve=>setTimeout(resolve,ms));}
+  clearSavedSession() {try{sessionStorage.removeItem('wxread-session-v1');}catch{}}
+  saveSession() {
+    if(!this.remember)return true;
+    if(this.sessionExpires<=Date.now()){this.clearSavedSession();this.remember=false;return false;}
+    try {
+      sessionStorage.setItem('wxread-session-v1',JSON.stringify({version:1,repository:this.repository,token:this.token,
+        branch:this.branch,clientId:this.clientId,serverKey:this.serverKey,publicKey:this.b64(this.pair.publicKey),privateKey:this.b64(this.pair.privateKey),
+        expiresAt:this.sessionExpires,registeredAt:this.registeredAt}));
+      return true;
+    }catch{this.clearSavedSession();this.remember=false;return false;}
+  }
+  async restore() {
+    await sodium.ready;
+    let saved,pair;
+    try {
+      const raw=sessionStorage.getItem('wxread-session-v1');if(!raw)return false;saved=JSON.parse(raw);
+      if(saved.version!==1 || !/^[\w.-]+\/[\w.-]+$/.test(saved.repository) || typeof saved.token!=='string' || !saved.token.trim() ||
+        typeof saved.branch!=='string' || !saved.branch || !/^[a-f0-9]{32}$/.test(saved.clientId) ||
+        !Number.isFinite(saved.expiresAt) || saved.expiresAt<=Date.now() || saved.expiresAt>Date.now()+12*60*60*1000 ||
+        !Number.isFinite(saved.registeredAt) || saved.registeredAt>Date.now())throw new Error('invalid session');
+      pair={publicKey:this.bytes(saved.publicKey),privateKey:this.bytes(saved.privateKey)};
+      if(pair.publicKey.length!==32 || pair.privateKey.length!==32 || this.bytes(saved.serverKey).length!==32)throw new Error('invalid keys');
+    }catch{if(pair)sodium.memzero(pair.privateKey);this.clearSavedSession();return false;}
+    this.sessionVersion++;this.repository=saved.repository;this.token=saved.token;this.branch=saved.branch;this.clientId=saved.clientId;
+    this.pair=pair;this.serverKey=saved.serverKey;this.registeredAt=saved.registeredAt;this.remember=true;this.sessionExpires=saved.expiresAt;
+    // Verify authorization again; a temporary network failure keeps the session for retry.
+    const version=this.sessionVersion,repo=await this.request('');this.assertSession(version);this.branch=repo.default_branch;
+    const metadata=await this.file('control.json');this.assertSession(version);
+    if(!metadata)throw this.error('缺少加密公钥配置，请检查 wxread-state 分支','CONFIGURATION');
+    this.serverKey=metadata.value.public_key;this.saveSession();return true;
+  }
   async request(path,method='GET',body,missing=false) {
-    const response=await fetch('https://api.github.com/repos/'+this.repository+path,{method,cache:'no-store',
-      headers:{Accept:'application/vnd.github+json',Authorization:'Bearer '+this.token,'X-GitHub-Api-Version':'2026-03-10',...(body===undefined?{}:{'Content-Type':'application/json'})},
-      ...(body===undefined?{}:{body:JSON.stringify(body)})});
-    if(missing && response.status===404)return null;
-    if(response.status===401)this.disconnect();
-    if(!response.ok){const errors={401:'GitHub Token 无效或已过期',403:'GitHub 权限不足或请求受限，请检查 Token 和 Actions 设置',404:'找不到仓库或工作流，请先将本次代码推送到默认分支',409:'仓库正在更新，请稍后重试',422:'GitHub 拒绝此操作，请确认工作流已发布且允许手动触发'};throw new Error(errors[response.status]||`GitHub 请求失败（${response.status}）`);}
-    const text=await response.text();return text?JSON.parse(text):null;
+    const version=this.sessionVersion,repository=this.repository,token=this.token;
+    const attempts=method==='GET'?3:1;
+    for(let attempt=0;attempt<attempts;attempt++){
+      this.assertSession(version);
+      if(Date.now()<this.retryAt)throw this.error('GitHub 请求限流，稍后自动恢复；无需重新登录','RATE_LIMIT',true);
+      const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+      let response,text;
+      try {
+        response=await fetch('https://api.github.com/repos/'+repository+path,{method,cache:'no-store',signal:controller.signal,
+          headers:{Accept:'application/vnd.github+json',Authorization:'Bearer '+token,'X-GitHub-Api-Version':'2026-03-10',...(body===undefined?{}:{'Content-Type':'application/json'})},
+          ...(body===undefined?{}:{body:JSON.stringify(body)})});
+        text=await response.text();
+      }catch{
+        this.assertSession(version);
+        if(attempt+1<attempts){await this.delay(1000*2**attempt);continue;}
+        throw this.error(method==='GET'?'网络暂时不可用，正在等待恢复；无需重新登录':'请求结果未确认，请查看 Actions 记录后再重试，避免重复提交','NETWORK',true);
+      }finally{clearTimeout(timeout);}
+      this.assertSession(version);
+      if(missing && response.status===404)return null;
+      if(response.status===401){this.disconnect();throw this.error('GitHub Token 无效、已过期或被撤销，请重新连接','AUTHENTICATION');}
+      const retryAfter=response.headers.get('retry-after'),remaining=response.headers.get('x-ratelimit-remaining');
+      if(response.status===429 || (response.status===403 && (retryAfter!==null || remaining==='0' || /rate limit/i.test(text)))){
+        const reset=Number(response.headers.get('x-ratelimit-reset'))*1000;
+        const retrySeconds=Number(retryAfter);
+        this.retryAt=Math.max(Date.now()+60000,Number.isFinite(retrySeconds)?Date.now()+retrySeconds*1000:0,remaining==='0' && Number.isFinite(reset)?reset:0);
+        throw this.error('GitHub 请求限流，稍后自动恢复；无需重新登录','RATE_LIMIT',true);
+      }
+      if(response.status>=500 && attempt+1<attempts){await this.delay(1000*2**attempt);continue;}
+      if(!response.ok){const errors={403:'GitHub 权限不足，请检查此 Token 的仓库权限',404:'找不到仓库或工作流，请检查仓库和默认分支',409:'仓库正在更新，请稍后重试',422:'GitHub 拒绝此操作，请确认工作流已发布且允许手动触发'};throw this.error(errors[response.status]||`GitHub 暂时无法完成请求（${response.status}）`,response.status>=500?'NETWORK':'PERMISSION',response.status>=500);}
+      return text?JSON.parse(text):null;
+    }
   }
   async file(path,ref='wxread-state') {
     const result=await this.request('/contents/'+path+'?ref='+encodeURIComponent(ref)+'&t='+Date.now(),'GET',undefined,true);
     if(!result)return null;
     return {value:JSON.parse(sodium.to_string(this.bytes(result.content.replace(/\s/g,'')))),sha:result.sha};
   }
-  async connect(repository,token,progress=()=>{}) {
+  async connect(repository,token,progress=()=>{},remember=false) {
     await sodium.ready;
     if(!/^[\w.-]+\/[\w.-]+$/.test(repository))throw new Error('仓库格式为 owner/repository');
+    this.disconnect();const version=this.sessionVersion;
     this.repository=repository;this.token=token.trim();this.pair=sodium.crypto_box_keypair();this.clientId=this.id();
     try {
-      progress('正在验证仓库权限…');const repo=await this.request('');this.branch=repo.default_branch;
+      progress('正在验证仓库权限…');const repo=await this.request('');this.assertSession(version);this.branch=repo.default_branch;
       await this.request('/actions/workflows/control.yml');
       let metadata=await this.file('control.json');
       if(!metadata){progress('正在初始化加密密钥…');await this.initialize();metadata=await this.file('control.json');}
       this.serverKey=metadata.value.public_key;
       progress('正在等待 Actions 读取账户配置，通常需要数十秒…');
       const result=await this.command('inspect',{},state=>progress(state.message||'等待 Actions 启动…'));
+      this.assertSession(version);
       this.data=result.overview;
-      localStorage.setItem('wxread-repository',repository);
-    }catch(error){this.disconnect();throw error;}
+      this.remember=remember;this.sessionExpires=Date.now()+12*60*60*1000;
+      const saved=this.saveSession();
+      try{localStorage.setItem('wxread-repository',repository);}catch{}
+      return {saved};
+    }catch(error){if(version===this.sessionVersion)this.disconnect();throw error;}
   }
   async initialize() {
     if(await this.file('state.enc.json'))throw new Error('已有加密账户状态，但缺少公钥配置。请恢复 control.json，避免覆盖现有密钥。');
@@ -72,7 +135,7 @@ class GitHubClient {
     const file=await this.file('responses/'+id+'.json');
     const state=file?this.decrypt(file.value.ciphertext):null;
     if(state?.overview)this.data=state.overview;
-    if(state && ['success','failed','expired','cancelled'].includes(state.status))return state;
+    if(state && ['success','failed','expired','cancelled'].includes(state.status)){if(state.status==='success'){this.registeredAt=Date.now();this.saveSession();}return state;}
     if(Date.now()-command.lastRunCheck>=10000){
       const runs=await this.request('/actions/workflows/control.yml/runs?event=workflow_dispatch&per_page=30');
       command.run=runs.workflow_runs.find(r=>r.display_title==='wxread-control '+id)||null;
@@ -89,7 +152,13 @@ class GitHubClient {
   }
   async command(operation,options={},progress=()=>{}) {
     const id=await this.start(operation,options),deadline=Date.now()+12*60*1000;
-    while(Date.now()<deadline){const state=await this.state(id);progress(state);if(state.status==='success')return state;if(['failed','expired','cancelled'].includes(state.status))throw new Error(state.message||'操作未完成');await new Promise(r=>setTimeout(r,5000));}
+    const version=this.sessionVersion;
+    while(Date.now()<deadline){
+      this.assertSession(version);
+      try{const state=await this.state(id);progress(state);if(state.status==='success')return state;if(['failed','expired','cancelled'].includes(state.status))throw new Error(state.message||'操作未完成');}
+      catch(error){if(!error.retryable)throw error;progress({status:'retrying',message:error.message});await this.delay(Math.min(30000,Math.max(5000,this.retryAt-Date.now())));continue;}
+      await this.delay(5000);
+    }
     throw new Error('等待 Actions 超时，请查看 GitHub 运行记录；操作可能仍在排队');
   }
   async cancel(id) {
@@ -99,7 +168,10 @@ class GitHubClient {
     this.commands.delete(id);
   }
   async overview() {
+    if(!this.connected)throw this.error('请先连接 GitHub 仓库','AUTHENTICATION');
+    if(Date.now()-this.registeredAt>=6*60*60*1000)await this.renewSnapshot();
     const file=await this.file('responses/'+this.clientId+'.json');if(file)this.data=this.decrypt(file.value.ciphertext).overview;
+    if(!this.data)await this.renewSnapshot();
     if(!this.data)throw new Error('账户状态尚未就绪');
     const data=structuredClone(this.data),result=await this.request('/actions/workflows/deploy.yml/runs?per_page=50');
     const map=new Map(result.workflow_runs.map(r=>[String(r.id),r]));
@@ -115,6 +187,10 @@ class GitHubClient {
     data.statistics.today.running=data.runs.filter(r=>r.status==='running' && new Date(r.started_at).toLocaleDateString('sv-SE',{timeZone:'Asia/Shanghai'})===today).length;
     return data;
   }
+  async renewSnapshot() {
+    if(!this.renewal){const version=this.sessionVersion;const task=this.command('inspect').then(result=>{this.assertSession(version);this.data=result.overview;this.registeredAt=Date.now();this.saveSession();});this.renewal=task;task.finally(()=>{if(this.renewal===task)this.renewal=null;}).catch(()=>{});}
+    return this.renewal;
+  }
   async run(accountId='') {
     const runs=await this.request('/actions/workflows/deploy.yml/runs?per_page=20');
     if(runs.workflow_runs.some(r=>r.status!=='completed'))throw new Error('已有阅读工作流运行或排队，请先完成或停止本批任务');
@@ -123,7 +199,7 @@ class GitHubClient {
     return {started:this.pendingReading.accountIds,skipped:[]};
   }
   async stop(accountId) {const data=await this.overview(),run=data.runs.find(r=>r.account_id===accountId && ['queued','running'].includes(r.status));if(!run?.workflow_run_id)throw new Error('任务尚未分配运行编号，请稍后重试');await this.request('/actions/runs/'+run.workflow_run_id+'/cancel','POST',{});}
-  disconnect() {if(this.pair)sodium.memzero(this.pair.privateKey);this.token='';this.pair=null;this.branch='';this.data=null;this.pendingReading=null;this.commands.clear();}
+  disconnect() {this.sessionVersion++;this.clearSavedSession();if(this.pair)sodium.memzero(this.pair.privateKey);this.token='';this.pair=null;this.branch='';this.data=null;this.pendingReading=null;this.commands.clear();this.remember=false;this.sessionExpires=0;this.registeredAt=0;this.retryAt=0;this.renewal=null;}
   url(path='') {return 'https://github.com/'+this.repository+path;}
 }
 window.githubClient=new GitHubClient();
