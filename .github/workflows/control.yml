@@ -1,0 +1,62 @@
+name: Pages account control
+run-name: 'wxread-control ${{ inputs.session_id }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        type: choice
+        options: [inspect, qr, import, update, delete, schedule, email, test-email]
+        required: true
+      session_id:
+        required: true
+        type: string
+      public_key:
+        required: true
+        type: string
+      payload:
+        description: Encrypted command; never paste plaintext credentials
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wxread-control
+  cancel-in-progress: false
+
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    environment: AutoRead
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-actions.txt
+      - run: pip install -r requirements-actions.txt
+      - if: inputs.operation == 'qr'
+        run: python -m playwright install --with-deps chromium
+      - name: Run encrypted Pages command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WXREAD_CONTROL_KEY: ${{ secrets.WXREAD_CONTROL_KEY }}
+          WXREAD_ACCOUNTS_JSON: ${{ secrets.WXREAD_ACCOUNTS_JSON }}
+          WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
+          CONTROL_OPERATION: ${{ inputs.operation }}
+          CONTROL_SESSION: ${{ inputs.session_id }}
+          CONTROL_PUBLIC_KEY: ${{ inputs.public_key }}
+          CONTROL_PAYLOAD: ${{ inputs.payload }}
+          PUSH_METHOD: ${{ secrets.PUSH_METHOD }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ vars.SMTP_PORT }}
+          SMTP_SECURITY: ${{ vars.SMTP_SECURITY }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python github_worker.py control

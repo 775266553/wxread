@@ -1,160 +1,125 @@
-# 更新第三版，提高读书稳定程度，最大限量保持cookie有效时间，欢迎fork！
+# 阅伴 · GitHub Pages 微信读书多账户控制台
 
-## 项目介绍 📚
+**界面运行在 GitHub Pages，扫码、阅读和发邮件由 GitHub Actions 执行。** 不需要部署服务器或启动 Docker。
 
-这个脚本主要是为了在微信读书的阅读**挑战赛中刷时长**和**保持天数**。由于本人偶尔看书时未能及时签到，导致入场费打了水漂。网上找了一些，发现高赞的自动阅读需要挂阅读器模拟或者用ADB模拟，实现一点也不优雅。因此，我决定编写一个自动化脚本。通过对官网接口的抓包和JS逆向分析实现。
+Pages 只托管 `pages/` 中的 HTML、CSS 和 JavaScript。页面通过 GitHub API 触发 Actions；Actions 在临时浏览器中生成微信读书的真实二维码，扫码成功后保存账户。阅读任务最多并行 4 个账户，每个账户独立 Cookie、目标时长和收件邮箱。
 
-该脚本具备以下功能：
+## 发布到 GitHub Pages
 
-- **阅读时长调节**：默认计入排行榜和挑战赛，时长可调节，默认为60分钟。
-- **定时运行推送**：可部署在GitHub Action/服务器上，支持每天定时运行并推送结果到微信。
-- **Cookie自动更新**：脚本能自动获取并更新Cookie，一次部署后面无需其它操作。
-- **轻量化设计**：本脚本实现了轻量化的编写，部署服务器/GIthub action后到点运行，无需额外硬件。
+1. 将本次代码推送到你的仓库默认分支。
+2. 仓库 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。
+3. 在 **Actions** 中运行 **Publish GitHub Pages**。Fork 后还需要启用 Actions。
+4. 发布成功后打开工作流输出的网址，例如 `https://你的用户名.github.io/wxread/`。
 
-***
-## 操作步骤 🛠️
+页面地址取决于仓库所有者和仓库名，不使用本机 `127.0.0.1` 地址。Pages 工作流只上传 `pages/`，不会把 Python 文件、数据库、`.env` 或本地登录信息发布出去。
 
-### 抓包准备
+## 第一次连接仓库
 
-脚本逻辑还是比较简单的，`main.py`与`push.py`代码不需要改动。在微信阅读官网 [微信读书](https://weread.qq.com/) 搜索【三体】点开阅读点击下一页进行抓包，抓到`read`接口 `https://weread.qq.com/web/book/read`，如果返回格式正常（如：
+页面点击「连接仓库」，填写 `owner/repository` 和自己的 **fine-grained personal access token**。
 
-```json
-{
-  "succ": 1,
-  "synckey": 564589834
-}
-```
-右键复制为Bash格式。
+创建 Token 时只选择这个仓库，授予以下 Repository permissions：
 
-### 方法一： GitHub Action部署运行（GitHub运行）
+| 权限 | 级别 | 用途 |
+| --- | --- | --- |
+| Contents | Read and write | 初始化、读取和更新加密状态分支 |
+| Actions | Read and write | 触发扫码/阅读、查看和取消工作流 |
+| Secrets | Read and write | 第一次初始化加密密钥 Secret |
+| Metadata | Read | GitHub 默认授予 |
 
+可从 [GitHub Token 设置](https://github.com/settings/personal-access-tokens)创建。使用自己的仓库；控制台是给仓库管理者使用的，不是向访客开放的多租户服务。
 
-- Fork这个仓库后，先打开 fork 的 **Actions** 页面，启用 `wxread` workflow；公开仓库 fork 后，定时 workflow 默认不会自动启用。
-- 在仓库 **Settings** -> 左侧列表中的 **Secrets and variables** -> **Actions**，然后在右侧的 **Repository secrets** 中添加如下值：
-  - `WXREAD_CURL_BASH`：上面抓read接口后转换为curl_bash的数据。
-  - `PUSH_METHOD`：推送方法，4选1推送方式（pushplus、wxpusher、telegram、serverChan）。
-  - `PUSHPLUS_TOKEN` or `WXPUSHER_SPT` or `TELEGRAM_BOT_TOKEN`&`TELEGRAM_CHAT_ID` or `SERVERCHAN_SPT`: 选择推送后填写对应token。
-  
-- 在 **Variables** 部分，最下方添加变量：
-  - `READ_NUM`：设定每次阅读的目标次数。
+首次连接会创建：
 
+- 仓库 Secret **`WXREAD_CONTROL_KEY`**：用于解密账户状态和页面指令的私钥。
+- 分支 **`wxread-state`**：存储公钥、加密账户配置、加密任务记录和加密扫码结果。
 
-- 基本释义：
+Token 只保存在页面内存中，不写入仓库或浏览器存储。刷新页面需要重新连接；仓库名称可以记住。已经存在的密钥不会在正常重新连接时重新生成。保留 `WXREAD_CONTROL_KEY`，删除或替换它会使已保存的账户状态无法解密。
 
-| key                        | Value                               | 说明                                                         | 属性      |
-| ------------------------- | ---------------------------------- | ------------------------------------------------------------ | --------- |
-| `WXREAD_CURL_BASH`         | `read` 接口 `curl_bash`数据 | **必填**，必须提供有效指令                                   | secrets   |
-| `READ_NUM`                 | 阅读次数（每次 30 秒）              | **可选**，阅读时长，默认 20 分钟                           | variables |
-| `PUSH_METHOD`              | `pushplus`/`wxpusher`/`telegram`/`serverchan`    | **可选**，推送方式，4选1，默认不推送                                       |    secrets     |
-| `PUSHPLUS_TOKEN`           | PushPlus 的 token                   | 当 `PUSH_METHOD=pushplus` 时必填，[获取地址](https://www.pushplus.plus/uc.html) | secrets   |
-| `WXPUSHER_SPT`             | WxPusher 的token                    | 当 `PUSH_METHOD=wxpusher` 时必填，[获取地址](https://wxpusher.zjiecode.com/docs/#/?id=获取spt) | secrets   |
-| `TELEGRAM_BOT_TOKEN`  <br>`TELEGRAM_CHAT_ID`   <br>`http_proxy`/`https_proxy`（可选）| 群组id以及机器人token                 | 当 `PUSH_METHOD=telegram` 时必填，[配置文档](https://www.nodeseek.com/post-22475-1) | secrets   |
-| `SERVERCHAN_SPT`          | serverchan 的 SendKey               | 当 `PUSH_METHOD=serverchan` 时必填，[获取地址](https://sct.ftqq.com/sendkey) | secrets   |
+## 扫码绑定多个账户
 
-**重要：除了READ_NUM配置在varables，其它的都配置在secrets里面的；需要推送`PUSH_METHOD`是必填的。**
+1. 连接完成后，点击「添加账户」。
+2. 填写备注、每次目标时长，以及可选的独立通知邮箱。
+3. 点击「生成扫码二维码」，等待 Actions 启动和准备浏览器，通常需要数十秒，也可能因 GitHub 排队更久。
+4. 使用微信扫一扫，在手机上确认登录。页面显示绑定成功后即可关闭扫码窗口。
+5. 重复操作即可绑定多个账户。
 
-### 视频教程
+每次使用独立浏览器会话。重复绑定同一账户会更新登录信息，保留目标、邮箱和启用状态；「重新绑定」必须扫描原账户。
 
-[![视频教程](https://github.com/user-attachments/assets/ec144869-3dbb-40fe-9bc5-f8bf1b5fce3c)](https://www.bilibili.com/video/BV1kJ6gY3En3/ "点击查看视频")
+二维码有效期约三分钟，从 Actions 生成二维码起计算。页面刷新会丢失当前浏览器的临时解密密钥，请在扫码完成前保持页面打开。扫码过期后可以重新生成；官网额外验证、网络问题或登录布局变化时，可以通过页面导入 cURL。
 
+扫码和配置操作会等待 Actions 执行，不会像常驻服务器一样立即响应。账户控制工作流串行执行；阅读工作流与它分开运行。工作流保留了原有的 `AutoRead` 环境；如果该环境要求审批，请在 GitHub Actions 中批准运行后继续。
 
-### 方法二： 服务器运行（docker部署）
+## 定时阅读和运行记录
 
-**步骤1：** 创建 docker-compose.yml 文件
+默认时间为 **北京时间每天 01:07**，GitHub 的 Cron 为 UTC `7 17 * * *`。可在页面「计划与通知」启停自动计划；手动运行仍可使用。
+
+改变时间请编辑 `.github/workflows/deploy.yml` 的 `schedule`，例如：
 
 ```yaml
-services:
-  wxread:
-    image: ghcr.io/findmover/wxread:latest
-    container_name: wxread
-    restart: unless-stopped
-
-    environment:
-      TZ: "Asia/Shanghai"
-      
-      # 阅读次数（每次 30 秒），默认40为20分钟
-      READ_NUM: 40
-      
-      # 微信读书 curl bash 命令（必需）
-      # 使用 | 表示多行字符串，下一行开始粘贴完整的 curl 命令
-      WXREAD_CURL_BASH: |
-        curl 'https://weread.qq.com/web/book/read' \
-        -H 'accept: application/json, text/plain, */*' \
-        .....
-      
-      # 定时任务时间（Cron 表达式）
-      CRON_SCHEDULE: "0 1 * * *"
-      
-      # 可选配置：推送方式 (pushplus/wxpusher/telegram/serverchan)
-      PUSH_METHOD: ""
-      # PushPlus 推送配置
-      PUSHPLUS_TOKEN: ""
-      # Telegram 推送配置
-      TELEGRAM_BOT_TOKEN: ""
-      TELEGRAM_CHAT_ID: ""
-      # WxPusher 推送配置
-      WXPUSHER_SPT: ""
-      # ServerChan 推送配置
-      SERVERCHAN_SPT: ""
+on:
+  schedule:
+    - cron: '30 0 * * *'  # 北京时间每天 08:30
 ```
 
-**Cron 定时任务配置：**
-- `0 1 * * *` - 每天凌晨1点（默认）
-- `0 */6 * * *` - 每6小时
-- `30 8 * * *` - 每天早上8:30
+GitHub 定时工作流可能延迟，长期无仓库活动时还可能停用，不能保证精确到分钟。[官方 schedule 说明](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)。
 
-**步骤2：** 启动容器
+「运行全部」执行所有启用账户，也可以单独运行一个账户。一个账户失败不会阻止其余账户；登录失效后标记为需要重新绑定。点击「停止本批」会取消该 Actions 阅读工作流，包含它同时执行的所有账户。
+
+刷新后的 Cookie 会写回加密状态，下一次工作流自动读取，不需要人工回写 Secrets。进度最多约每分钟同步一次；取消工作流时展示最后保存的进度。页面显示最近 100 条记录，加密状态保留最近 1000 条用于统计。
+
+时长由脚本按成功阅读请求计算，不是从微信读书排行榜拉取的官方统计。运行状态和通知依赖第三方接口及 GitHub Actions 的可用性。
+
+## 邮件发送
+
+GitHub 没有通用发信 API，[邮箱 API](https://docs.github.com/en/rest/users/emails)用于管理账户邮箱。
+
+- **只接收 Actions 运行结果提醒**：在 [GitHub 通知设置](https://github.com/settings/notifications)开启 Actions 的 Email 通知。[官方说明](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications)。
+- **接收各账户的阅读结果邮件**：在页面「计划与通知」配置 SMTP 服务器、端口、加密方式、用户名、授权码、发件邮箱和默认收件邮箱。邮件由 Actions 通过你配置的邮箱服务发送。
+
+「发送测试邮件」会触发 Actions，用表单中填写的配置发送，不会自动保存。保存时授权码留空代表保留原授权码。可为账户设置独立邮箱，留空则使用默认收件邮箱。默认地址支持英文逗号分隔多个收件人。
+
+SMTP 授权码加密保存，页面读取设置时只返回「是否已保存授权码」，不会返回原值。任务成功或失败均可通知，手动停止不发送邮件。
+
+## 加密和数据范围
+
+账户 Cookie、SMTP 授权码、邮箱、备注和运行记录均加密后写入状态分支。页面指令使用仓库公钥加密；二维码及页面状态再使用当前浏览器的临时公钥加密，只有发起请求的页面能读取。
+
+公开 Pages 和公开仓库中可以看见页面代码、公钥、密文和工作流元数据，无法直接看到 Cookie 或邮件授权码。Token、私钥和 Cookie 不写入工作流输入或明文日志。状态分支的 Git 历史会保留旧密文；保护仓库访问权限和加密密钥。拥有仓库 Actions/代码管理权限的人应被视为可信管理者。
+
+代码使用本地随页面发布的 libsodium，不从第三方脚本 CDN 加载加密代码。浏览器只需要访问 GitHub API；微信读书登录由 Actions 的 Chromium 访问。
+
+## 兼容原有账户配置
+
+如果已经设置了仓库 Secret `WXREAD_CURL_BASH` 或 `WXREAD_ACCOUNTS_JSON`，首次创建加密状态时会导入。
+
+多账户 JSON 示例：
+
+```json
+[
+  {"name":"我的账户","curl":"完整的微信读书 read 请求 cURL","read_num":40,"email":"reader1@example.com"},
+  {"name":"家人","cookies":{"wr_vid":"占位账户ID","wr_skey":"占位登录值"},"read_num":20,"email":"reader2@example.com"}
+]
+```
+
+使用完整有效的 Cookie；示例占位值不能登录。`read_num` 每次 30 秒。页面导入只解析 cURL 文本，不执行命令。
+
+未初始化 Pages 控制台时，原有定时脚本仍可从这些 Secrets 运行。初始化后，加密状态成为主要配置，旧 Secret 不再覆盖页面设置。原有 PushPlus、WxPusher、Telegram、ServerChan 环境变量通知继续兼容。
+
+## 文件和验证
+
+| 文件 | 用途 |
+| --- | --- |
+| `pages/` | GitHub Pages 静态界面 |
+| `.github/workflows/pages.yml` | 发布页面 |
+| `.github/workflows/control.yml` | 扫码、设置和测试邮件 |
+| `.github/workflows/deploy.yml` | 定时或手动阅读 |
+| `github_worker.py` | Actions 执行业务操作 |
+| `github_state.py` | 加密状态和 GitHub API |
+| `requirements-actions.txt` | Actions 专用依赖 |
 
 ```bash
-docker-compose up -d
+pip install -r requirements.txt
+python -m unittest discover -s tests -v
 ```
 
-**步骤3：** 查看日志和测试
-
-```bash
-# 查看日志
-docker-compose logs -f
-
-# 测试运行
-docker-compose exec wxread python /app/main.py
-```
-
-**Docker 说明：**
-- 镜像地址：`ghcr.io/findmover/wxread:latest`
-- 支持多架构：linux/amd64 和 linux/arm64
-- 推送代码到仓库会自动构建最新镜像
-
-***
-## Attention 📢
-
-1. **签到次数调整**：只需签到完成挑战赛可以将`num`次数从120调整为2，每次`num`为30秒，200即100分钟。
-   
-2. **解决阅读时间问题**：对于issue中提出的“阅读时间没有增加”，“增加时间与刷的时间不对等”建议保留`config.py`中的【data】字段，默认阅读三体，其它书籍自行测试。
-
-3. **GitHub Action部署/本地部署**：主要配置config.py即可，Action部署使用环境变量，本地部署修改config.py里的阅读次数、headers、cookies即可。
-
-4. **推送**：pushplus推送偶尔出问题，猜测是GitHub action环境问题，增加重试机制。并增加wxpusher的极简推送方式。
-
-
-***
-## 字段解释 🔍
-
-| 字段 | 示例值 | 解释 |
-| --- | --- | --- |
-| `appId` | `"wbxxxxxxxxxxxxxxxxxxxxxxxx"` | 应用的唯一标识符。 |
-| `b` | `"ce032b305a9bc1ce0b0dd2a"` | 书籍或章节的唯一标识符。 |
-| `c` | `"0723244023c072b030ba601"` | 内容的唯一标识符，可能是页面或具体段落。 |
-| `ci` | `60` | 章节或部分的索引。 |
-| `co` | `336` | 内容的具体位置或页码。 |
-| `sm` | `"[插图]威慑纪元61年，执剑人在一棵巨树"` | 当前阅读的内容描述或摘要。 |
-| `pr` | `65` | 页码或段落索引。 |
-| `rt` | `88` | 阅读时长或阅读进度。 |
-| `ts` | `1727580815581` | 时间戳，表示请求发送的具体时间（毫秒级）。 |
-| `rn` | `114` | 随机数或请求编号，用于标识唯一的请求。 |
-| `sg` | `"bfdf7de2fe1673546ca079e2f02b79b937901ef789ed5ae16e7b43fb9e22e724"` | 安全签名，用于验证请求的合法性和完整性。 |
-| `ct` | `1727580815` | 时间戳，表示请求发送的具体时间（秒级）。 |
-| `ps` | `"xxxxxxxxxxxxxxxxxxxxxxxx"` | 用户标识符或会话标识符，用于追踪用户或会话。 |
-| `pc` | `"xxxxxxxxxxxxxxxxxxxxxxxx"` | 设备标识符或客户端标识符，用于标识用户的设备或客户端。 |
-| `s` | `"fadcb9de"` | 校验和或哈希值，用于验证请求数据的完整性。 |
-
-
+浏览器预览静态界面可用任意静态文件服务器。生产使用 GitHub Pages，不需要运行 `web.py`、`scheduler.py` 或 Docker。

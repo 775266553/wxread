@@ -10,3 +10,8 @@ logs/
 .env
 .env.local
 .env.*.local
+
+# Local runtime and encrypted account database (including its encryption key)
+.venv/
+data/
+playwright/.auth/

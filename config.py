@@ -1,6 +1,7 @@
 # config.py 自定义配置,包括阅读次数、推送token的填写
 import os
-import re
+import shlex
+from http.cookies import SimpleCookie
 
 """
 可修改区域
@@ -82,37 +83,21 @@ data = {
 
 
 def convert(curl_command):
-    """提取bash接口中的headers与cookies
-    支持 -H 'Cookie: xxx' 和 -b 'xxx' 两种方式的cookie提取
-    """
-    # 提取 headers
-    headers_temp = {}
-    for match in re.findall(r"-H '([^:]+): ([^']+)'", curl_command):
-        headers_temp[match[0]] = match[1]
-
-    # 提取 cookies
-    cookies = {}
-    
-    # 从 -H 'Cookie: xxx' 提取
-    cookie_header = next((v for k, v in headers_temp.items() 
-                         if k.lower() == 'cookie'), '')
-    
-    # 从 -b 'xxx' 提取
-    cookie_b = re.search(r"-b '([^']+)'", curl_command)
-    cookie_string = cookie_b.group(1) if cookie_b else cookie_header
-    
-    # 解析 cookie 字符串
-    if cookie_string:
-        for cookie in cookie_string.split('; '):
-            if '=' in cookie:
-                key, value = cookie.split('=', 1)
-                cookies[key.strip()] = value.strip()
-    
-    # 移除 headers 中的 Cookie/cookie
-    headers = {k: v for k, v in headers_temp.items() 
-              if k.lower() != 'cookie'}
-
-    return headers, cookies
+    """只解析 cURL 文本，绝不执行。兼容单/双引号及换行。"""
+    tokens = shlex.split(curl_command.replace('\\\n', ''))
+    parsed_headers, cookie_string = {}, ''
+    for index, token in enumerate(tokens[:-1]):
+        if token in ('-H', '--header') and ':' in tokens[index + 1]:
+            key, value = tokens[index + 1].split(':', 1)
+            if key.lower() == 'cookie':
+                cookie_string = value.strip()
+            else:
+                parsed_headers[key.lower()] = value.strip()
+        elif token in ('-b', '--cookie'):
+            cookie_string = tokens[index + 1]
+    cookie = SimpleCookie()
+    cookie.load(cookie_string)
+    return parsed_headers, {key: value.value for key, value in cookie.items()}
 
 
 headers, cookies = convert(curl_str) if curl_str else (headers, cookies)

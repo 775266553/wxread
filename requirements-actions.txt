@@ -1,0 +1,5 @@
+requests>=2.32.4,<3
+APScheduler>=3.11,<4
+cryptography>=46,<49
+PyNaCl>=1.6,<2
+playwright>=1.56,<2

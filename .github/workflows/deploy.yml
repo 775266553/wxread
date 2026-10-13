@@ -2,7 +2,7 @@ name: wxread
 
 concurrency:
   group: ${{ github.workflow }} # 使用工作流名称作为并发组的key
-  cancel-in-progress: true    # 取消任何正在进行的相同并发组的工作流
+  cancel-in-progress: false
 
 on:
   schedule:
@@ -14,36 +14,48 @@ on:
     #- cron: '40 3 * * *'
     # 晚间任务：北京时间每天 22:00（UTC 14:00）
     #- cron: '0 14 * * *'
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
+    inputs:
+      account_id:
+        description: Empty runs all enabled accounts
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+run-name: 'wxread-reading ${{ inputs.account_id || ''all'' }}'
 
 jobs:
   deploy:
     runs-on: ubuntu-22.04
-    environment: AutoRead  # 指定环境
+    environment: AutoRead
+    timeout-minutes: 360
 
     steps:
 
-    - name: Set DNS to Google's DNS
-      run: |
-        echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
-        echo "nameserver 8.8.4.4" | sudo tee -a /etc/resolv.conf
-
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@v6
 
     - name: Set up Python
-      uses: actions/setup-python@v7
+      uses: actions/setup-python@v6
       with:
-        python-version: '3.10'
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: requirements-actions.txt
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install certifi==2024.8.30 charset-normalizer==3.4.0 idna==3.10 requests==2.32.3 urllib3==2.2.3
+        pip install -r requirements-actions.txt
 
     - name: Run deployment script
       env:
+        GH_TOKEN: ${{ github.token }}
+        WXREAD_CONTROL_KEY: ${{ secrets.WXREAD_CONTROL_KEY }}
+        READ_ACCOUNT_ID: ${{ inputs.account_id }}
         WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
+        WXREAD_ACCOUNTS_JSON: ${{ secrets.WXREAD_ACCOUNTS_JSON }}
         PUSH_METHOD: ${{ secrets.PUSH_METHOD }}
         PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         WXPUSHER_SPT: ${{ secrets.WXPUSHER_SPT }}
@@ -51,9 +63,16 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         SERVERCHAN_SPT:  ${{ secrets.SERVERCHAN_SPT }}
         READ_NUM: ${{ vars.READ_NUM }}  # 使用 Repository Variables
+        SMTP_HOST: ${{ secrets.SMTP_HOST }}
+        SMTP_PORT: ${{ vars.SMTP_PORT }}
+        SMTP_SECURITY: ${{ vars.SMTP_SECURITY }}
+        SMTP_USER: ${{ secrets.SMTP_USER }}
+        SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        SMTP_FROM: ${{ secrets.SMTP_FROM }}
+        EMAIL_TO: ${{ secrets.EMAIL_TO }}
 
       run: |
-        python main.py
+        python github_worker.py read
 
   keepalive-job:
     name: Keepalive Workflow
