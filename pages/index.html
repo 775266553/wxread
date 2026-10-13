@@ -57,7 +57,19 @@
   </form><div class="privacy-note"><svg class="icon"><use href="#i-shield"/></svg>账户信息加密保存；扫码与阅读由 GitHub Actions 执行</div>
 </dialog>
 <dialog id="edit-dialog" class="modal compact"><button class="icon-button modal-close" aria-label="关闭" data-close="edit-dialog"><svg class="icon"><use href="#i-close"/></svg></button><h2>账户设置</h2><p class="muted">为这个账户安排合适的阅读计划。</p><form id="edit-form"><input name="id" type="hidden"><label>账户备注<input name="name" maxlength="80" required></label><label>每次目标时长（分钟）<input name="minutes" type="number" min="0.5" max="1440" step="0.5" required></label><label>通知邮箱<input name="email" type="email" placeholder="留空使用默认收件邮箱"></label><label class="toggle-label"><span>参加自动阅读计划</span><input name="enabled" type="checkbox" class="switch"></label><p id="edit-error" class="form-error"></p><button class="button primary full">保存设置</button></form><button id="delete-account" class="danger-link">移除这个账户</button></dialog>
-<dialog id="auth-dialog" class="modal compact"><div class="dialog-icon"><svg class="icon"><use href="#i-shield"/></svg></div><h2>连接你的 GitHub 仓库</h2><p class="muted">使用仅授权此仓库的 Token。权限需要 Contents、Actions、Secrets 读写。</p><form id="auth-form"><label>仓库<input name="repository" placeholder="owner/wxread" required autocomplete="off"></label><label>GitHub Token<input name="token" type="password" autocomplete="off" placeholder="github_pat_…" required></label><label class="toggle-label"><span>保持当前标签页连接</span><input name="remember" type="checkbox" class="switch"></label><p class="section-description">勾选后将 Token 和临时解密密钥保存到本标签页的会话存储，12 小时内刷新可恢复。断开时清除；共享设备请勿勾选。未勾选时仅保留在页面内存中。</p><p class="section-description">首次连接会初始化一个加密密钥 Secret 和 wxread-state 状态分支。</p><p id="auth-error" class="form-error" role="status"></p><button class="button primary full">连接仓库</button></form></dialog>
+<dialog id="auth-dialog" class="modal compact">
+  <div class="dialog-icon"><svg class="icon"><use href="#i-shield"/></svg></div>
+  <h2>连接你的 GitHub 仓库</h2>
+  <p class="muted">使用仅授权此仓库的 Token。权限需要 Contents、Actions、Secrets 读写。</p>
+  <form id="auth-form">
+    <label>仓库<input name="repository" placeholder="owner/wxread" required autocomplete="off"></label>
+    <label><span class="token-field-title">GitHub Token<a id="token-settings-link" class="token-settings-link" href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener noreferrer">配置 Token ↗</a></span><input name="token" type="password" aria-label="GitHub Token" autocomplete="off" placeholder="github_pat_…" required></label>
+    <label class="toggle-label"><span>保持当前标签页连接</span><input name="remember" type="checkbox" class="switch"></label>
+    <p class="section-description">勾选后将 Token 和临时解密密钥保存到本标签页的会话存储，12 小时内刷新可恢复。断开时清除；共享设备请勿勾选。未勾选时仅保留在页面内存中。</p>
+    <p class="section-description">首次连接会初始化一个加密密钥 Secret 和 wxread-state 状态分支。</p>
+    <p id="auth-error" class="form-error" role="status"></p><button class="button primary full">连接仓库</button>
+  </form>
+</dialog>
 <dialog id="confirm-dialog" class="modal compact"><h2>移除账户</h2><p class="muted">该账户将从阅读计划中移除，已有运行记录会保留。</p><div class="confirm-actions"><button class="button" data-close="confirm-dialog">取消</button><button class="button danger" id="confirm-delete">移除账户</button></div></dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 </body></html>

@@ -1,8 +1,51 @@
 # 阅伴 · GitHub Pages 微信读书多账户控制台
 
+**[打开 Web 管理后台 →](https://wbshm.github.io/wxread/)** · [配置 GitHub Token](https://github.com/settings/personal-access-tokens) · [查看 Actions 运行记录](https://github.com/wbshm/wxread/actions)
+
 **界面运行在 GitHub Pages，扫码、阅读和发邮件由 GitHub Actions 执行。** 不需要部署服务器或启动 Docker。
 
 Pages 只托管 `pages/` 中的 HTML、CSS 和 JavaScript。页面通过 GitHub API 触发 Actions；Actions 在临时浏览器中生成微信读书的真实二维码，扫码成功后保存账户。阅读任务最多并行 4 个账户，每个账户独立 Cookie、目标时长和收件邮箱。
+
+## 当前 Web 版功能
+
+- **多账户管理**：微信扫码绑定、cURL 导入、重新绑定、独立目标时长和通知邮箱。
+- **阅读总览与任务记录**：查看账户状态、最近七天记录、任务进度、成功或失败结果；支持手动运行和停止本批任务。
+- **计划与多渠道通知**：定时阅读开关，邮件、PushPlus、WxPusher、Telegram、Server酱，以及企业微信、飞书、钉钉和通用 JSON Webhook；渠道可同时启用、分别测试。
+- **连接恢复与加密状态**：可选保持当前标签页连接，12 小时内刷新恢复；网络波动自动重试，账户凭据与通知密钥加密保存。
+
+## 快速使用
+
+1. 打开上方的 **Web 管理后台**。这里的链接进入 `wbshm/wxread` 已发布的页面；使用 Fork 时，请改用你自己的 Pages 地址。
+2. 在连接窗口填写仓库和自己的 GitHub Token。Token 输入框右侧的 **「配置 Token ↗」** 会在新标签页打开 GitHub 的配置页；选择此仓库并按下方权限表授权。
+3. 连接后点击 **「添加账户」→「生成扫码二维码」**，等待 Actions 准备完成，再使用微信扫码并在手机上确认。
+4. 在 **「计划与通知」** 选择通知渠道，发送测试通知并保存；然后可手动运行账户，或等待定时任务。
+
+GitHub 插件的连接授权与 Web 后台的 Token 是两套独立登录状态，插件授权不会自动传给公开的 Pages 页面。已经连接的 Web 标签页无需重复填写 Token；希望刷新后恢复时，可在登录时勾选「保持当前标签页连接」。
+
+## Web 界面截图
+
+以下截图使用当前 `pages/` 界面和演示账户拍摄；账户、邮箱、阅读统计及通知开启状态均为演示数据，不包含真实 Token、Cookie 或机器人地址。
+
+### 阅读总览
+
+![Web 阅读总览：多账户、任务统计与最近七天记录](docs/images/web-overview.jpg)
+
+<details>
+<summary>查看账户管理、通知设置与连接窗口</summary>
+
+### 多账户管理
+
+![Web 多账户管理：目标时长、登录状态与运行操作](docs/images/web-accounts.jpg)
+
+### 计划与通知
+
+![Web 计划与通知：定时开关、邮件及群机器人 Webhook](docs/images/web-notifications.jpg)
+
+### 连接仓库与 Token 配置入口
+
+![Web 连接窗口：配置 Token 链接与保持当前标签页连接](docs/images/web-login.jpg)
+
+</details>
 
 ## 发布到 GitHub Pages
 
@@ -15,7 +58,7 @@ Pages 只托管 `pages/` 中的 HTML、CSS 和 JavaScript。页面通过 GitHub 
 
 ## 第一次连接仓库
 
-页面点击「连接仓库」，填写 `owner/repository` 和自己的 **fine-grained personal access token**。
+页面点击「连接仓库」，填写 `owner/repository` 和自己的 **fine-grained personal access token**。输入框旁的「配置 Token ↗」会打开 [GitHub Token 配置页](https://github.com/settings/personal-access-tokens)；点击 **Generate new token** 创建 Token。[GitHub 官方创建说明](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)。
 
 创建 Token 时只选择这个仓库，授予以下 Repository permissions：
 
