@@ -46,21 +46,24 @@ class QRLoginManager:
     def update(self, session_id, **values):
         with self.lock:
             if session_id in self.sessions:
-                self.sessions[session_id].update(values)
+                state = self.sessions[session_id]
+                if state['cancel'].is_set() and values.get('status') != 'cancelled':
+                    return
+                state.update(values)
 
     def state(self, session_id):
         with self.lock:
             if session_id not in self.sessions:
                 raise KeyError('扫码会话不存在或已过期')
             state = self.sessions[session_id]
-            return {key: value for key, value in state.items() if key not in ('created', 'cancel', 'refresh')}
+            return {key: value for key, value in state.items() if key not in ('created', 'cancel', 'refresh', 'requested_refresh_id')}
 
     def refresh(self, session_id, request_id):
         with self.lock:
             state = self.sessions.get(session_id)
             if not state or state['status'] not in ('starting', 'waiting', 'refreshing'):
                 raise ValueError('扫码会话已结束，请重新生成二维码')
-            state['refresh_id'] = request_id
+            state['requested_refresh_id'] = request_id
             state['refresh'].set()
             state.update(status='refreshing', message='正在刷新二维码…', qr=None)
 
@@ -107,6 +110,7 @@ class QRLoginManager:
                     with self.lock:
                         cancel = self.sessions[session_id]['cancel']
                         refresh = self.sessions[session_id].setdefault('refresh', threading.Event())
+                        active_refresh_id = self.sessions[session_id].get('refresh_id')
                     deadline = time.monotonic() + QR_SESSION_SECONDS
                     fingerprint = None
                     blocked_fingerprint = None
@@ -118,19 +122,26 @@ class QRLoginManager:
                         cookies = {cookie['name']: cookie['value'] for cookie in context.cookies('https://weread.qq.com/')}
                         if cookies.get('wr_vid') and cookies.get('wr_skey') and not modal.is_visible():
                             name = options.get('name') or unquote(cookies.get('wr_name', '')) or '微信读书账户'
-                            account = self.store.bind(cookies, {
+                            headers = {
                                 'accept': 'application/json, text/plain, */*',
                                 'content-type': 'application/json',
                                 'origin': 'https://weread.qq.com', 'referer': 'https://weread.qq.com/',
                                 'user-agent': page.evaluate('navigator.userAgent'),
-                            }, name=name, read_num=options.get('read_num'), email=options.get('email', ''),
-                                account_id=options.get('account_id'))
-                            self.update(session_id, status='success', message='账户绑定成功', qr=None, account=account)
+                            }
+                            with self.lock:
+                                if cancel.is_set():
+                                    break
+                                account = self.store.bind(cookies, headers, name=name, read_num=options.get('read_num'),
+                                                          email=options.get('email', ''), account_id=options.get('account_id'))
+                                self.update(session_id, status='success', message='账户绑定成功', qr=None, account=account)
                             return
-                        manual = refresh.is_set()
+                        with self.lock:
+                            manual = refresh.is_set()
+                            if manual:
+                                refresh.clear()
+                                active_refresh_id = self.sessions[session_id].get('requested_refresh_id')
                         stale = published_at is not None and time.monotonic() - published_at >= QR_IMAGE_SECONDS
                         if manual or (refreshing_at is None and (expired_overlay.is_visible() or stale)):
-                            refresh.clear()
                             self.update(session_id, status='refreshing', message='正在刷新二维码…', qr=None)
                             blocked_fingerprint, fingerprint = fingerprint or blocked_fingerprint, None
                             published_at = None
@@ -156,11 +167,18 @@ class QRLoginManager:
                                     screenshot = base64.b64encode(qr.screenshot(timeout=5000)).decode()
                                     if not page.evaluate(QR_READY_SCRIPT):
                                         continue
-                                    version += 1
-                                    self.update(session_id, status='waiting',
-                                                message='微信扫码后确认登录',
-                                                qr='data:image/png;base64,' + screenshot, qr_version=version,
-                                                qr_expires_at=time.time() + QR_IMAGE_SECONDS)
+                                    with self.lock:
+                                        if cancel.is_set():
+                                            break
+                                        if refresh.is_set():
+                                            fingerprint = current
+                                            continue
+                                        version += 1
+                                        self.update(session_id, status='waiting',
+                                                    message='微信扫码后确认登录',
+                                                    qr='data:image/png;base64,' + screenshot, qr_version=version,
+                                                    qr_expires_at=time.time() + QR_IMAGE_SECONDS,
+                                                    refresh_id=active_refresh_id)
                                     fingerprint = current
                                     published_at = time.monotonic()
                                     refreshing_at = None

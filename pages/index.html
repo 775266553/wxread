@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>阅伴 · 微信读书控制台</title><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; base-uri 'self'; form-action 'self'">
   <meta name="description" content="微信读书多账户管理">
-  <link rel="icon" href="./static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./static/style.css?v=20ab6e3813"><script defer src="./static/libsodium.js?v=0a66b0fdfb"></script><script defer src="./static/libsodium-wrappers.js?v=828884732c"></script><script defer src="./static/github.js?v=b3a190d144"></script><script defer src="./static/notifications.js?v=df425afe13"></script><script defer src="./static/app.js?v=48fa663574"></script>
+  <link rel="icon" href="./static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./static/style.css?v=20ab6e3813"><script defer src="./static/libsodium.js?v=0a66b0fdfb"></script><script defer src="./static/libsodium-wrappers.js?v=828884732c"></script><script defer src="./static/github.js?v=3e445d95f0"></script><script defer src="./static/notifications.js?v=df425afe13"></script><script defer src="./static/app.js?v=65d7e6d71f"></script>
 </head>
 <body>
 <svg class="sprite" xmlns="http://www.w3.org/2000/svg"><defs>
@@ -51,7 +51,7 @@
     <label>账户备注<input name="name" maxlength="80" placeholder="账户名称"></label>
     <div class="form-row"><label>目标时长（分钟）<input name="minutes" type="number" min="0.5" max="1440" step="0.5" value="20" required></label><label>通知邮箱（可选）<input name="email" type="email" placeholder="使用默认收件邮箱"></label></div>
     <div id="qr-panel"><div id="qr-area" class="qr-area"><svg class="icon"><use href="#i-qr"/></svg><span>点击生成二维码</span></div><p id="qr-status" class="qr-status"></p><button id="qr-start" class="button primary full" type="submit">生成二维码<svg class="icon"><use href="#i-arrow"/></svg></button><button id="qr-refresh" class="button full" type="button" hidden>刷新二维码</button></div>
-    <div id="import-panel" hidden><label>微信读书 read 请求的 cURL<textarea name="curl" rows="5" placeholder="粘贴 read 请求的 cURL"></textarea></label><button class="button primary full" type="submit">导入并绑定</button></div>
+    <div id="import-panel" hidden><label>微信读书 read 请求的 cURL<textarea name="curl" rows="5" placeholder="粘贴 read 请求的 cURL"></textarea></label><button id="import-submit" class="button primary full" type="submit">导入并绑定</button></div>
     <p id="bind-error" class="form-error" role="alert"></p>
   </form>
 </dialog>

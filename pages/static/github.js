@@ -26,17 +26,24 @@ class GitHubClient {
   async restore() {
     await sodium.ready;
     let saved,pair;
-    try {
-      let raw;
-      for(const kind of ['session','local']){try{raw=(kind==='local'?localStorage:sessionStorage).getItem('wxread-session-v1');}catch{}if(raw){this.storageKind=kind;break;}}
-      if(!raw)return false;saved=JSON.parse(raw);
-      if(saved.version!==1 || !/^[\w.-]+\/[\w.-]+$/.test(saved.repository) || typeof saved.token!=='string' || !saved.token.trim() ||
-        typeof saved.branch!=='string' || !saved.branch || !/^[a-f0-9]{32}$/.test(saved.clientId) ||
-        !Number.isFinite(saved.expiresAt) || saved.expiresAt<=Date.now() || saved.expiresAt>Date.now()+(this.storageKind==='local'?7*24:12)*60*60*1000 ||
-        !Number.isFinite(saved.registeredAt) || saved.registeredAt>Date.now())throw new Error('invalid session');
-      pair={publicKey:this.bytes(saved.publicKey),privateKey:this.bytes(saved.privateKey)};
-      if(pair.publicKey.length!==32 || pair.privateKey.length!==32 || this.bytes(saved.serverKey).length!==32)throw new Error('invalid keys');
-    }catch{if(pair)sodium.memzero(pair.privateKey);this.clearSavedSession();return false;}
+    for(const kind of ['local','session']){
+      let storage;
+      try {
+        storage=kind==='local'?localStorage:sessionStorage;
+        const raw=storage.getItem('wxread-session-v1');if(!raw)continue;
+        saved=JSON.parse(raw);
+        if(saved.version!==1 || !/^[\w.-]+\/[\w.-]+$/.test(saved.repository) || typeof saved.token!=='string' || !saved.token.trim() ||
+          typeof saved.branch!=='string' || !saved.branch || !/^[a-f0-9]{32}$/.test(saved.clientId) ||
+          !Number.isFinite(saved.expiresAt) || saved.expiresAt<=Date.now() || saved.expiresAt>Date.now()+(kind==='local'?7*24:12)*60*60*1000 ||
+          !Number.isFinite(saved.registeredAt) || saved.registeredAt>Date.now())throw new Error('invalid session');
+        pair={publicKey:this.bytes(saved.publicKey),privateKey:this.bytes(saved.privateKey)};
+        if(pair.publicKey.length!==32 || pair.privateKey.length!==32 || this.bytes(saved.serverKey).length!==32)throw new Error('invalid keys');
+        this.storageKind=kind;
+        if(kind==='local')try{sessionStorage.removeItem('wxread-session-v1');}catch{}
+        break;
+      }catch{if(pair)sodium.memzero(pair.privateKey);pair=null;saved=null;try{storage?.removeItem('wxread-session-v1');}catch{}}
+    }
+    if(!saved || !pair)return false;
     this.sessionVersion++;this.repository=saved.repository;this.token=saved.token;this.branch=saved.branch;this.clientId=saved.clientId;
     this.pair=pair;this.serverKey=saved.serverKey;this.registeredAt=saved.registeredAt;this.remember=true;this.sessionExpires=saved.expiresAt;
     // Verify authorization again; a temporary network failure keeps the session for retry.
@@ -150,10 +157,6 @@ class GitHubClient {
     const file=await this.file('responses/'+id+'.json');
     const state=file?this.decrypt(file.value.ciphertext):null;
     if(state?.overview)this.acceptOverview(state.overview);
-    if(command.refreshId && !['success','failed','expired','cancelled'].includes(state?.status) && state?.refresh_id!==command.refreshId){
-      if(Date.now()-command.refreshCreated>45000)return {status:'failed',qr:null,message:'刷新未响应，请重新生成二维码'};
-      return {status:'refreshing',qr:null,message:'正在刷新二维码…'};
-    }
     if(state && ['success','failed','expired','cancelled'].includes(state.status)){if(state.status==='success'){this.registeredAt=Date.now();this.saveSession();}return state;}
     if(Date.now()-command.lastRunCheck>=15000){
       const runs=await this.request('/actions/workflows/control.yml/runs?event=workflow_dispatch&per_page=30');
@@ -166,6 +169,10 @@ class GitHubClient {
       command.completedSeenAt ??= Date.now();
       if(Date.now()-command.completedSeenAt<10000)return {status:'refreshing',message:'任务已结束，正在读取最终结果…',qr:null};
       return {status:'failed',message:`Actions 已结束（${run.conclusion}），未返回结果。请打开运行记录检查工作流。`,qr:null};
+    }
+    if(command.refreshId && state?.refresh_id!==command.refreshId){
+      if(Date.now()-command.refreshCreated>45000)return {status:'failed',qr:null,message:'刷新未响应，请重新生成二维码'};
+      return {status:'refreshing',qr:null,message:'正在刷新二维码…'};
     }
     if(command.operation==='qr' && state?.qr && state.qr_expires_at && Date.now()>=state.qr_expires_at*1000)return {...state,status:'refreshing',qr:null,message:'二维码已过期，等待更新…'};
     return state||{status:'starting',qr:null,message:run?.status==='waiting'?'Actions 正在等待环境审批，请到 GitHub Actions 批准此运行…':run?.status==='in_progress'?'Actions 正在准备浏览器和账户配置…':'等待 GitHub Actions 启动，请保持页面打开…'};
@@ -189,10 +196,11 @@ class GitHubClient {
   async refreshQR(id) {
     const command=this.commands.get(id);if(!command || command.operation!=='qr')throw new Error('扫码会话已结束，请重新生成');
     const requestId=this.id(),path='requests/'+id+'.json';
+    command.refreshId=requestId;command.refreshCreated=Date.now();
     const current=await this.file(path);
     const value={ciphertext:this.encrypt({action:'refresh',session_id:id,request_id:requestId},this.serverKey)};
     await this.request('/contents/'+path,'PUT',{branch:'wxread-state',message:'Refresh wxread login QR',content:this.b64(sodium.from_string(JSON.stringify(value))),...(current?{sha:current.sha}:{})});
-    command.refreshId=requestId;command.refreshCreated=Date.now();return requestId;
+    return requestId;
   }
   async cancel(id) {
     const command=this.commands.get(id);if(!command)return;
@@ -206,7 +214,7 @@ class GitHubClient {
     const file=await this.file('responses/'+this.clientId+'.json');if(file)this.acceptOverview(this.decrypt(file.value.ciphertext).overview);
     if(!this.data)await this.renewSnapshot();
     if(!this.data)throw new Error('账户状态尚未就绪');
-    const data=structuredClone(this.data),result=await this.request('/actions/workflows/deploy.yml/runs?per_page=50');
+    const result=await this.request('/actions/workflows/deploy.yml/runs?per_page=50'),data=structuredClone(this.data);
     const map=new Map(result.workflow_runs.map(r=>[String(r.id),r]));
     for(const run of data.runs){const workflow=map.get(String(run.workflow_run_id));if(workflow?.status==='completed' && ['running','queued'].includes(run.status)){run.status=workflow.conclusion==='cancelled'?'cancelled':'interrupted';run.message='Actions 已结束，显示最后保存的任务进度';}}
     if(this.pendingReading){

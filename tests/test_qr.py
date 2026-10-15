@@ -78,7 +78,7 @@ class QRCase(unittest.TestCase):
         with self.assertRaises(ValueError):
             manager.start()
 
-    def check_refresh_recovery(self, manual=False):
+    def check_refresh_recovery(self, manual=False, during_capture=False, cancel_during_capture=False):
         with tempfile.TemporaryDirectory() as directory:
             manager = QRLoginManager(AccountStore(directory))
             cancel = Mock(is_set=Mock(return_value=False))
@@ -98,7 +98,18 @@ class QRCase(unittest.TestCase):
             # Simulate a visible expiry overlay whose click does nothing.
             overlay.click.return_value = None
             image.evaluate.side_effect = lambda _: 'new-svg' if navigated() else 'old-svg'
-            wrapper.screenshot.side_effect = lambda **_: b'new-png' if navigated() else b'old-png'
+            captured = []
+
+            def screenshot(**_):
+                if not captured and during_capture:
+                    manager.refresh('test', 'manual-request')
+                if not captured and cancel_during_capture:
+                    manager.cancel('test')
+                    cancel.is_set.return_value = True
+                captured.append(navigated())
+                return b'new-png' if navigated() else b'old-png'
+
+            wrapper.screenshot.side_effect = screenshot
             modal.is_visible.side_effect = lambda: iteration < 6
             page.evaluate.side_effect = lambda script: True if script == QR_READY_SCRIPT else 'test-agent'
 
@@ -109,7 +120,7 @@ class QRCase(unittest.TestCase):
                                                   {'name': 'wr_skey', 'value': 'third-fixture'}]
 
             def wait(_):
-                if manual and iteration == 0:
+                if manual and not during_capture and iteration == 0:
                     manager.refresh('test', 'manual-request')
                 return False
 
@@ -126,13 +137,21 @@ class QRCase(unittest.TestCase):
             def update(session, **values):
                 updates.append(values)
                 original(session, **values)
+                if values['status'] == 'waiting' and manager.state(session).get('refresh_id') == 'manual-request':
+                    self.assertEqual(values['qr'], 'data:image/png;base64,' + base64.b64encode(b'new-png').decode(),
+                                     'only a newly captured QR may acknowledge a refresh request')
 
             with patch('playwright.sync_api.sync_playwright', factory), \
                  patch('qr_login.time.monotonic', side_effect=lambda: max(0, iteration) * 5), \
                  patch.object(manager, 'update', update):
                 manager._run('test', {})
+            if cancel_during_capture:
+                self.assertEqual(manager.state('test')['status'], 'cancelled')
+                self.assertEqual(manager.store.accounts(), [])
+                self.assertFalse(any(item['status'] == 'waiting' for item in updates), 'a cancelled capture must never be published')
+                return
             self.assertEqual(manager.state('test')['status'], 'success')
-            self.assertEqual([item['qr_version'] for item in updates if item['status'] == 'waiting'], [1, 2])
+            self.assertEqual([item['qr_version'] for item in updates if item['status'] == 'waiting'], [1] if during_capture else [1, 2])
             self.assertEqual(wrapper.screenshot.call_count, 2, 'do not recapture an old code after expiry')
             self.assertEqual(page.goto.call_count, 2, 'recover inside the existing isolated context')
             browser.new_context.assert_called_once()
@@ -147,6 +166,12 @@ class QRCase(unittest.TestCase):
 
     def test_manual_refresh_invalidates_old_image_and_acknowledges_request(self):
         self.check_refresh_recovery(manual=True)
+
+    def test_manual_refresh_arriving_during_capture_cannot_acknowledge_the_old_qr(self):
+        self.check_refresh_recovery(manual=True, during_capture=True)
+
+    def test_cancel_arriving_during_capture_cannot_reopen_the_closed_session(self):
+        self.check_refresh_recovery(cancel_during_capture=True)
 
     def test_cancelled_windows_do_not_block_a_third_binding(self):
         manager = QRLoginManager(Mock())

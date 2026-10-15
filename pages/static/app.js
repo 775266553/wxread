@@ -4,7 +4,7 @@ const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let data = null, view = 'overview', loginSession = null, loginTimer = null, bindTab = 'qr', bindAccount = null, pollTimer = null;
-let refreshPromise=null,refreshVersion=null,pollVersion=0,polling=false,bindVersion=0,qrBusy=false;
+let refreshPromise=null,refreshVersion=null,pollVersion=0,polling=false,bindVersion=0,bindBusy=null;
 const labels = {overview:'总览',accounts:'账户管理',history:'运行记录',settings:'计划与通知'};
 const statusLabels = {success:'已完成',failed:'失败',running:'运行中',queued:'排队中',cancelled:'已停止',interrupted:'已中断'};
 let toastTimer;
@@ -103,7 +103,8 @@ async function refresh(force=false) {
     const task=(async()=>{
       try {
         const result=await api('/overview');if(version!==client.sessionVersion || !client.connected)return false;
-        data=result;$('#connection').textContent='GitHub 已连接';$('#connection').title='';return true;
+        if(!data || Number(result.revision||0)>=Number(data.revision||0))data=result;
+        $('#connection').textContent='GitHub 已连接';$('#connection').title='';return true;
       }catch(e){
         if(e.code==='SESSION_CHANGED' || version!==client.sessionVersion)return false;
         $('#connection').textContent=!client.connected?'需要重新连接':e.code==='RATE_LIMIT'?'限流中 · 等待恢复':e.code==='PERMISSION'?'需要检查仓库权限':'网络波动 · 自动重试';
@@ -124,7 +125,7 @@ function startPolling(immediate=false) {
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){clearTimeout(pollTimer);pollTimer=null;}else if(polling)startPolling(true);});
 window.addEventListener('online',()=>{if(window.githubClient.connected)startPolling(true);});
 async function closeQR() {clearTimeout(loginTimer);loginTimer=null;if(loginSession){const id=loginSession;loginSession=null;try{await api('/login/'+id,'DELETE');}catch{}}}
-function openBind(account=null) {bindVersion++;closeQR();qrBusy=false;bindAccount=account;bindTab='qr';$('#bind-form').reset();$('#bind-title').textContent=account?'重新绑定账户':'添加账户';$('#bind-form').elements.name.value=account?.name || '';$('#bind-form').elements.minutes.value=account?account.read_num/2:20;$('#bind-form').elements.email.value=account?.email || '';$('#bind-error').textContent='';$('#qr-area').innerHTML=`${icon('qr')}<span>点击生成二维码</span>`;$('#qr-status').textContent='';$('#qr-start').disabled=false;$('#qr-start').textContent='生成二维码';$('#qr-refresh').hidden=true;$('#bind-form').elements.name.disabled=!!account;$('#bind-form').elements.minutes.disabled=!!account;$('#bind-form').elements.email.disabled=!!account;$$('[data-bind-tab]').forEach(b=>{b.hidden=!!account&&b.dataset.bindTab==='import';b.classList.toggle('active',b.dataset.bindTab==='qr');});$('#qr-panel').hidden=false;$('#import-panel').hidden=true;$('#bind-dialog').showModal();}
+function openBind(account=null) {bindVersion++;closeQR();$('#import-submit').disabled=false;bindAccount=account;bindTab='qr';$('#bind-form').reset();$('#bind-title').textContent=account?'重新绑定账户':'添加账户';$('#bind-form').elements.name.value=account?.name || '';$('#bind-form').elements.minutes.value=account?account.read_num/2:20;$('#bind-form').elements.email.value=account?.email || '';$('#bind-error').textContent='';$('#qr-area').innerHTML=`${icon('qr')}<span>点击生成二维码</span>`;$('#qr-status').textContent='';$('#qr-start').disabled=false;$('#qr-start').textContent='生成二维码';$('#qr-refresh').hidden=true;$('#bind-form').elements.name.disabled=!!account;$('#bind-form').elements.minutes.disabled=!!account;$('#bind-form').elements.email.disabled=!!account;$$('[data-bind-tab]').forEach(b=>{b.hidden=!!account&&b.dataset.bindTab==='import';b.classList.toggle('active',b.dataset.bindTab==='qr');});$('#qr-panel').hidden=false;$('#import-panel').hidden=true;$('#bind-dialog').showModal();}
 function renderQRState(state) {
   $('#qr-status').textContent=state.message;
   if(state.qr){
@@ -183,7 +184,7 @@ document.addEventListener('click',async e=>{
   if(e.target.closest('.brand')){e.preventDefault();setView('overview');return;}
   const close=e.target.closest('[data-close]');if(close){$('#'+close.dataset.close).close();return;}
   const nav=e.target.closest('.nav-item');if(nav){setView(nav.dataset.view);return;}
-  const tab=e.target.closest('[data-bind-tab]');if(tab){await closeQR();bindTab=tab.dataset.bindTab;$$('[data-bind-tab]').forEach(b=>b.classList.toggle('active',b===tab));$('#qr-panel').hidden=bindTab!=='qr';$('#import-panel').hidden=bindTab!=='import';$('#bind-error').textContent='';return;}
+  const tab=e.target.closest('[data-bind-tab]');if(tab){if(bindTab===tab.dataset.bindTab)return;bindVersion++;closeQR();bindTab=tab.dataset.bindTab;$$('[data-bind-tab]').forEach(b=>b.classList.toggle('active',b===tab));$('#qr-panel').hidden=bindTab!=='qr';$('#import-panel').hidden=bindTab!=='import';$('#import-submit').disabled=false;$('#qr-start').disabled=false;$('#qr-refresh').hidden=true;$('#bind-error').textContent='';return;}
   const button=e.target.closest('[data-action]');if(!button)return;
   const action=button.dataset.action, id=button.dataset.id, account=data?.accounts.find(a=>a.id===id);
   if(action==='bind'){openBind();return;}if(action==='rebind'){openBind(account);return;}if(action==='edit'){editAccount(account);return;}if(action==='view'){setView(button.dataset.view);return;}
@@ -192,28 +193,29 @@ document.addEventListener('click',async e=>{
 });
 document.addEventListener('submit',async e=>{
   e.preventDefault();const f=e.target, formId=e.target.getAttribute('id'), submit=e.submitter || $('button[type=submit],button:not([type])',f);if(submit)submit.disabled=true;
+  const version=bindVersion;let ownsBinding=false;
   try {
     if(formId==='auth-form'){pausePolling();const result=await api('/auth','POST',{token:f.elements.token.value,repository:f.elements.repository.value.trim(),remember:f.elements.remember.checked});f.elements.token.value='';$('#auth-dialog').close();$('#logout').hidden=false;if(result?.saved===false)toast('浏览器无法保存登录信息，刷新后需要重新连接',true);await refresh(true);startPolling();}
-    if(formId==='bind-form'){const options={name:f.elements.name.value,read_num:Number(f.elements.minutes.value)*2,email:f.elements.email.value};if(bindAccount)options.account_id=bindAccount.id;
+    if(formId==='bind-form'){if(bindBusy===version)return;bindBusy=version;ownsBinding=true;const options={name:f.elements.name.value,read_num:Number(f.elements.minutes.value)*2,email:f.elements.email.value};if(bindAccount)options.account_id=bindAccount.id;
       if(bindTab==='import'){
         const result=await api('/accounts/import','POST',{...options,curl:f.elements.curl.value});const binding=bindingSaved(result);
+        if(version!==bindVersion || !$('#bind-dialog').open){await refresh(true);return;}
         if(binding.action==='updated' && !bindAccount){$('#bind-error').textContent='已更新已有账户：'+binding.name+'，未新增账户';}
         else{f.reset();$('#bind-dialog').close();toast('已添加账户：'+binding.name);}await refresh(true);
       }else{
-        if(qrBusy)return;qrBusy=true;const version=bindVersion;
-        try{await closeQR();$('#bind-error').textContent='';renderQRState({status:'starting',message:'生成中…'});$('#qr-start').disabled=true;
-          const result=await api('/login','POST',options);
-          if(version!==bindVersion || !$('#bind-dialog').open){window.githubClient.cancel(result.session_id).catch(()=>{});return;}
-          loginSession=result.session_id;$('#qr-refresh').hidden=false;$('#qr-refresh').disabled=true;pollQR(loginSession);
-        }finally{qrBusy=false;}
+        await closeQR();if(version!==bindVersion || !$('#bind-dialog').open)return;
+        $('#bind-error').textContent='';renderQRState({status:'starting',message:'生成中…'});$('#qr-start').disabled=true;
+        const result=await api('/login','POST',options);
+        if(version!==bindVersion || !$('#bind-dialog').open){window.githubClient.cancel(result.session_id).catch(()=>{});return;}
+        loginSession=result.session_id;$('#qr-refresh').hidden=false;$('#qr-refresh').disabled=true;pollQR(loginSession);
       }
     }
     if(formId==='edit-form'){await api('/accounts/'+f.elements.id.value,'PATCH',{name:f.elements.name.value,read_num:Number(f.elements.minutes.value)*2,email:f.elements.email.value,enabled:f.elements.enabled.checked});$('#edit-dialog').close();toast('账户设置已保存');await refresh(true);}
     if(formId==='schedule-form'){await api('/settings/schedule','PUT',{enabled:f.elements.enabled.checked,cron:f.elements.cron.value,timezone:f.elements.timezone.value});await refresh(true);toast('阅读计划已保存');}
     if(formId==='email-form'){await api('/settings/email','PUT',emailValues());await refresh(true);toast('邮件设置已保存');}
     if(f.dataset.notificationChannel){await api('/settings/notifications','PUT',notificationValues(f));await refresh(true);toast(notificationLabels[f.dataset.notificationChannel]+' 通知设置已保存');}
-  }catch(err){const target={ 'bind-form':'#bind-error','edit-form':'#edit-error','auth-form':'#auth-error','email-form':'#email-result'}[formId]||(f.dataset.notificationChannel?'#notification-result-'+f.dataset.notificationChannel:null);if(target)$(target).textContent=err.message;else toast(err.message,true);}
-  finally {if(submit && !(formId==='bind-form' && bindTab==='qr' && loginSession))submit.disabled=false;}
+  }catch(err){if(formId==='bind-form' && version!==bindVersion)return;const target={ 'bind-form':'#bind-error','edit-form':'#edit-error','auth-form':'#auth-error','email-form':'#email-result'}[formId]||(f.dataset.notificationChannel?'#notification-result-'+f.dataset.notificationChannel:null);if(target)$(target).textContent=err.message;else toast(err.message,true);}
+  finally {if(ownsBinding && bindBusy===version)bindBusy=null;if(submit && (formId!=='bind-form' || (version===bindVersion && bindBusy!==version && !(bindTab==='qr' && loginSession))))submit.disabled=false;}
 });
 document.addEventListener('input',e=>{if(e.target.id==='history-search'){$('#history-list').innerHTML=historyTable(data.runs.filter(r=>`${r.account_name} ${r.message}`.includes(e.target.value)));}});
 document.addEventListener('change',e=>{if(e.target.id==='schedule-preset' && e.target.value!=='custom')$('#schedule-form').elements.cron.value=e.target.value;});

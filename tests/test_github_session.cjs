@@ -63,6 +63,17 @@ async function main(){
     const restored=vm.runInContext('new GitHubClient()',scope);assert.equal(await restored.restore(),false);assert.equal(sessionStorage.values.size,0);
     sessionStorage.setItem('wxread-session-v1','bad JSON');assert.equal(await restored.restore(),false);assert.equal(sessionStorage.values.size,0);
   }
+  for(const invalid of ['expired','malformed','superseded']){
+    const {scope,client,sessionStorage,localStorage,now}=setup();
+    client.remember=true;client.storageKind='local';client.sessionExpires=now()+7*24*3600000;client.saveSession();
+    const persistent=localStorage.getItem('wxread-session-v1');
+    sessionStorage.setItem('wxread-session-v1',invalid==='malformed'?'bad JSON':JSON.stringify({...JSON.parse(persistent),token:'obsolete-fixture-token',expiresAt:now()+(invalid==='expired'?-1:3600000)}));
+    scope.fetch=async(_url,options)=>{assert.equal(options.headers.Authorization,'Bearer fixture-token');return response(200,{default_branch:'main'});};
+    const restored=vm.runInContext('new GitHubClient()',scope);restored.file=async()=>({value:{public_key:client.serverKey}});
+    assert.equal(await restored.restore(),true,'an obsolete tab session must not erase a valid remembered login');
+    assert.equal(restored.storageKind,'local');assert.equal(sessionStorage.getItem('wxread-session-v1'),null);
+    assert.equal(localStorage.getItem('wxread-session-v1'),persistent);
+  }
   {
     const {scope,client,sessionStorage,now}=setup();client.remember=true;client.sessionExpires=now()+3600000;client.saveSession();const raw=sessionStorage.getItem('wxread-session-v1');
     scope.fetch=async()=>{throw new TypeError('offline');};const restored=vm.runInContext('new GitHubClient()',scope);restored.delay=async()=>{};
@@ -105,6 +116,15 @@ async function main(){
     const {client}=setup();assert.equal(client.acceptOverview({revision:4,accounts:[{id:'third'}]}),true);
     assert.equal(client.acceptOverview({revision:3,accounts:[]}),false);assert.equal(client.data.accounts.length,1,'an older snapshot cannot erase a newly added account');
     assert.equal(client.acceptOverview({revision:5,accounts:[]}),true);
+  }
+  {
+    const {client}=setup();let finish;const state={revision:2,accounts:[{id:'first'},{id:'second'}],runs:[],statistics:{today:{running:0}}};
+    client.data=state;client.file=async()=>null;client.request=()=>new Promise(resolve=>finish=resolve);
+    const pending=client.overview();for(let i=0;i<10;i++)await Promise.resolve();
+    client.acceptOverview({...state,revision:3,accounts:[...state.accounts,{id:'third'}]});
+    finish({workflow_runs:[]});const result=await pending;
+    assert.equal(result.accounts.length,3,'a slow workflow lookup must not hide an account saved while the overview was loading');
+    assert.equal(result.revision,3);
   }
   console.log('GitHub session, request recovery and subscription regression checks passed');
 }
