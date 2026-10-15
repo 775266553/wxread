@@ -4,7 +4,7 @@ const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let data = null, view = 'overview', loginSession = null, loginTimer = null, bindTab = 'qr', bindAccount = null, pollTimer = null;
-let refreshPromise=null,refreshVersion=null,pollVersion=0,polling=false;
+let refreshPromise=null,refreshVersion=null,pollVersion=0,polling=false,bindVersion=0,qrBusy=false;
 const labels = {overview:'总览',accounts:'账户管理',history:'运行记录',settings:'计划与通知'};
 const statusLabels = {success:'已完成',failed:'失败',running:'运行中',queued:'排队中',cancelled:'已停止',interrupted:'已中断'};
 let toastTimer;
@@ -118,13 +118,13 @@ function pausePolling() {polling=false;pollVersion++;clearTimeout(pollTimer);pol
 function startPolling(immediate=false) {
   pausePolling();if(!window.githubClient.connected)return;polling=true;const version=pollVersion;
   const schedule=delay=>{if(version===pollVersion && polling && document.visibilityState!=='hidden')pollTimer=setTimeout(tick,delay);};
-  const tick=async()=>{if(version!==pollVersion || !polling)return;const ok=await refresh();if(window.githubClient.connected)schedule(Math.max(ok?10000:30000,window.githubClient.retryAt-Date.now() || 0));};
+  const tick=async()=>{if(version!==pollVersion || !polling)return;const ok=await refresh();if(window.githubClient.connected)schedule(Math.max(ok?(data?.runs?.some(run=>['running','queued'].includes(run.status))?15000:60000):30000,window.githubClient.retryAt-Date.now() || 0));};
   schedule(immediate?0:10000);
 }
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){clearTimeout(pollTimer);pollTimer=null;}else if(polling)startPolling(true);});
 window.addEventListener('online',()=>{if(window.githubClient.connected)startPolling(true);});
 async function closeQR() {clearTimeout(loginTimer);loginTimer=null;if(loginSession){const id=loginSession;loginSession=null;try{await api('/login/'+id,'DELETE');}catch{}}}
-function openBind(account=null) {closeQR();bindAccount=account;bindTab='qr';$('#bind-form').reset();$('#bind-title').textContent=account?'重新绑定账户':'添加账户';$('#bind-form').elements.name.value=account?.name || '';$('#bind-form').elements.minutes.value=account?account.read_num/2:20;$('#bind-form').elements.email.value=account?.email || '';$('#bind-error').textContent='';$('#qr-area').innerHTML=`${icon('qr')}<span>点击生成二维码</span>`;$('#qr-status').textContent='';$('#qr-start').disabled=false;$('#qr-start').textContent='生成二维码';$('#bind-form').elements.name.disabled=!!account;$('#bind-form').elements.minutes.disabled=!!account;$('#bind-form').elements.email.disabled=!!account;$$('[data-bind-tab]').forEach(b=>{b.hidden=!!account&&b.dataset.bindTab==='import';b.classList.toggle('active',b.dataset.bindTab==='qr');});$('#qr-panel').hidden=false;$('#import-panel').hidden=true;$('#bind-dialog').showModal();}
+function openBind(account=null) {bindVersion++;closeQR();qrBusy=false;bindAccount=account;bindTab='qr';$('#bind-form').reset();$('#bind-title').textContent=account?'重新绑定账户':'添加账户';$('#bind-form').elements.name.value=account?.name || '';$('#bind-form').elements.minutes.value=account?account.read_num/2:20;$('#bind-form').elements.email.value=account?.email || '';$('#bind-error').textContent='';$('#qr-area').innerHTML=`${icon('qr')}<span>点击生成二维码</span>`;$('#qr-status').textContent='';$('#qr-start').disabled=false;$('#qr-start').textContent='生成二维码';$('#qr-refresh').hidden=true;$('#bind-form').elements.name.disabled=!!account;$('#bind-form').elements.minutes.disabled=!!account;$('#bind-form').elements.email.disabled=!!account;$$('[data-bind-tab]').forEach(b=>{b.hidden=!!account&&b.dataset.bindTab==='import';b.classList.toggle('active',b.dataset.bindTab==='qr');});$('#qr-panel').hidden=false;$('#import-panel').hidden=true;$('#bind-dialog').showModal();}
 function renderQRState(state) {
   $('#qr-status').textContent=state.message;
   if(state.qr){
@@ -134,7 +134,47 @@ function renderQRState(state) {
     $('#qr-area').innerHTML=`${icon('qr')}<span>${state.status==='retrying'?'网络恢复后继续读取二维码…':state.status==='refreshing'?'正在更新二维码…':state.status==='starting'?'等待扫码任务准备完成…':'本次二维码已结束'}</span>`;
   }
 }
-async function pollQR(id) {if(loginSession!==id || !$('#bind-dialog').open)return;try {const state=await api('/login/'+id);if(loginSession!==id)return;renderQRState(state);if(state.status==='success'){loginSession=null;$('#bind-dialog').close();toast('账户已绑定');await refresh(true);return;}if(['failed','expired','cancelled'].includes(state.status)){$('#bind-error').textContent=state.message;$('#qr-start').disabled=false;$('#qr-start').textContent='重新生成二维码';return;}loginTimer=setTimeout(()=>pollQR(id),state.status==='starting'?2000:1200);}catch(e){if(loginSession!==id)return;if(e.retryable && window.githubClient.connected){renderQRState({status:'retrying',message:e.message});loginTimer=setTimeout(()=>pollQR(id),Math.max(5000,window.githubClient.retryAt-Date.now() || 0));return;}renderQRState({status:'failed',message:e.message});$('#bind-error').textContent=e.message;$('#qr-start').disabled=false;}}
+function bindingSaved(result) {
+  const binding=result.binding;
+  if(!binding || !result.overview?.accounts.some(account=>account.id===binding.account_id))throw new Error('未确认账户保存结果，请重试或刷新账户列表');
+  window.githubClient.acceptOverview(result.overview);data=window.githubClient.data;
+  render();
+  return binding;
+}
+async function pollQR(id) {
+  if(loginSession!==id || !$('#bind-dialog').open)return;
+  try {
+    const state=await api('/login/'+id);if(loginSession!==id)return;
+    renderQRState(state);
+    $('#qr-refresh').hidden=false;$('#qr-refresh').disabled=state.status!=='waiting';
+    if(state.status==='success'){
+      const binding=bindingSaved(state);loginSession=null;$('#qr-refresh').hidden=true;$('#qr-start').disabled=false;
+      if(binding.action==='updated' && !bindAccount){
+        $('#qr-status').textContent='已更新已有账户：'+binding.name+'，未新增账户';
+        $('#qr-area').innerHTML=`${icon('check')}<span>登录信息已更新</span>`;
+        $('#qr-start').textContent='绑定其他账户';
+      }else{$('#bind-dialog').close();toast(binding.action==='added'?'已添加账户：'+binding.name:'账户登录信息已更新');}
+      await refresh(true);return;
+    }
+    if(['failed','expired','cancelled'].includes(state.status)){
+      loginSession=null;$('#qr-refresh').hidden=true;$('#bind-error').textContent=state.message;
+      $('#qr-start').disabled=false;$('#qr-start').textContent='重新生成二维码';
+      window.githubClient.cancel(id).catch(()=>{});return;
+    }
+    loginTimer=setTimeout(()=>pollQR(id),state.status==='starting'?3000:2500);
+  }catch(e){
+    if(loginSession!==id)return;
+    if(e.retryable && window.githubClient.connected){renderQRState({status:'retrying',message:e.message});loginTimer=setTimeout(()=>pollQR(id),Math.max(5000,window.githubClient.retryAt-Date.now() || 0));return;}
+    renderQRState({status:'failed',message:e.message});loginSession=null;$('#qr-refresh').hidden=true;
+    $('#bind-error').textContent=e.message;$('#qr-start').disabled=false;$('#qr-start').textContent='重新生成二维码';
+    window.githubClient.cancel(id).catch(()=>{});
+  }
+}
+$('#qr-refresh').addEventListener('click',async()=>{
+  const id=loginSession;if(!id)return;
+  $('#qr-refresh').disabled=true;$('#bind-error').textContent='';renderQRState({status:'refreshing',message:'正在刷新二维码…'});
+  try{await window.githubClient.refreshQR(id);}catch(error){if(loginSession===id){$('#bind-error').textContent=error.message;$('#qr-refresh').disabled=false;}}
+});
 function editAccount(account) {const f=$('#edit-form');f.elements.id.value=account.id;f.elements.name.value=account.name;f.elements.minutes.value=account.read_num/2;f.elements.email.value=account.email;f.elements.enabled.checked=account.enabled;$('#edit-error').textContent='';$('#edit-dialog').showModal();}
 function emailValues(){const f=$('#email-form'), values=Object.fromEntries(new FormData(f));values.enabled=f.elements.enabled.checked;return values;}
 function openAuth(message='') {$('#logout').hidden=true;$('#connection').textContent=message?'需要重新连接':'尚未连接';if(message)$('#auth-error').textContent=message;if(!$('#auth-dialog').open)$('#auth-dialog').showModal();}
@@ -153,9 +193,20 @@ document.addEventListener('click',async e=>{
 document.addEventListener('submit',async e=>{
   e.preventDefault();const f=e.target, formId=e.target.getAttribute('id'), submit=e.submitter || $('button[type=submit],button:not([type])',f);if(submit)submit.disabled=true;
   try {
-    if(formId==='auth-form'){pausePolling();const result=await api('/auth','POST',{token:f.elements.token.value,repository:f.elements.repository.value.trim(),remember:f.elements.remember.checked});f.elements.token.value='';$('#auth-dialog').close();$('#logout').hidden=false;if(result?.saved===false)toast('此浏览器无法保存标签页会话，当前连接仍可使用；刷新后需要重新连接',true);await refresh(true);startPolling();}
+    if(formId==='auth-form'){pausePolling();const result=await api('/auth','POST',{token:f.elements.token.value,repository:f.elements.repository.value.trim(),remember:f.elements.remember.checked});f.elements.token.value='';$('#auth-dialog').close();$('#logout').hidden=false;if(result?.saved===false)toast('浏览器无法保存登录信息，刷新后需要重新连接',true);await refresh(true);startPolling();}
     if(formId==='bind-form'){const options={name:f.elements.name.value,read_num:Number(f.elements.minutes.value)*2,email:f.elements.email.value};if(bindAccount)options.account_id=bindAccount.id;
-      if(bindTab==='import'){await api('/accounts/import','POST',{...options,curl:f.elements.curl.value});f.reset();$('#bind-dialog').close();toast('账户已导入');await refresh(true);}else{await closeQR();$('#bind-error').textContent='';renderQRState({status:'starting',message:'生成中…'});$('#qr-start').disabled=true;const result=await api('/login','POST',options);loginSession=result.session_id;pollQR(loginSession);}
+      if(bindTab==='import'){
+        const result=await api('/accounts/import','POST',{...options,curl:f.elements.curl.value});const binding=bindingSaved(result);
+        if(binding.action==='updated' && !bindAccount){$('#bind-error').textContent='已更新已有账户：'+binding.name+'，未新增账户';}
+        else{f.reset();$('#bind-dialog').close();toast('已添加账户：'+binding.name);}await refresh(true);
+      }else{
+        if(qrBusy)return;qrBusy=true;const version=bindVersion;
+        try{await closeQR();$('#bind-error').textContent='';renderQRState({status:'starting',message:'生成中…'});$('#qr-start').disabled=true;
+          const result=await api('/login','POST',options);
+          if(version!==bindVersion || !$('#bind-dialog').open){window.githubClient.cancel(result.session_id).catch(()=>{});return;}
+          loginSession=result.session_id;$('#qr-refresh').hidden=false;$('#qr-refresh').disabled=true;pollQR(loginSession);
+        }finally{qrBusy=false;}
+      }
     }
     if(formId==='edit-form'){await api('/accounts/'+f.elements.id.value,'PATCH',{name:f.elements.name.value,read_num:Number(f.elements.minutes.value)*2,email:f.elements.email.value,enabled:f.elements.enabled.checked});$('#edit-dialog').close();toast('账户设置已保存');await refresh(true);}
     if(formId==='schedule-form'){await api('/settings/schedule','PUT',{enabled:f.elements.enabled.checked,cron:f.elements.cron.value,timezone:f.elements.timezone.value});await refresh(true);toast('阅读计划已保存');}
@@ -170,7 +221,7 @@ document.addEventListener('click',async e=>{if(e.target.closest('#test-email')){
 $('#delete-account').addEventListener('click',()=>$('#confirm-dialog').showModal());
 $('#confirm-delete').addEventListener('click',async()=>{const b=$('#confirm-delete');b.disabled=true;try{await api('/accounts/'+$('#edit-form').elements.id.value,'DELETE');$('#confirm-dialog').close();$('#edit-dialog').close();toast('账户已移除');await refresh(true);}catch(e){toast(e.message,true);}finally{b.disabled=false;}});
 $('#logout').addEventListener('click',async()=>{await api('/logout','POST',{});pausePolling();data=null;$('#content').innerHTML='<div class="loading">请连接仓库</div>';openAuth();});
-$('#bind-dialog').addEventListener('close',closeQR);
+$('#bind-dialog').addEventListener('close',()=>{if(!$('#bind-dialog').open){bindVersion++;closeQR();}});
 $('#today-label').textContent=new Date().toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'long'});
 (async()=>{try{await sodium.ready;$('#connection').textContent='正在恢复连接';await window.githubClient.restore();if(!window.githubClient.connected){$('#connection').textContent='尚未连接';openAuth();return;}$('#logout').hidden=false;await refresh(true);startPolling();}catch(e){if(window.githubClient.connected){$('#logout').hidden=false;await refresh(true);startPolling();}else{$('#connection').textContent='需要重新连接';openAuth(e.message);}}})();
 

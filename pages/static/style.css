@@ -8,3 +8,4 @@
 .token-field-title{display:flex;align-items:center;justify-content:space-between;gap:12px}.token-settings-link{color:var(--accent);font-size:12px;text-decoration:underline;text-underline-offset:3px}.token-settings-link:hover{color:var(--accent-dark)}
 
 .sidebar-footer{margin-top:auto}.schedule-link{display:block;margin:0 0 20px}.settings-layout .settings-status{margin:14px 0 0}.notification-settings{min-width:0}
+#qr-refresh{margin-top:10px}

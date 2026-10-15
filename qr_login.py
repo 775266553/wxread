@@ -11,6 +11,8 @@ from urllib.parse import unquote
 
 
 QR_SESSION_SECONDS = 360
+QR_IMAGE_SECONDS = 75
+QR_REFRESH_GRACE = 8
 QR_READY_SCRIPT = """() => {
     const node = document.querySelector('.wr_login_modal_qr_img');
     if (!node || node.classList.contains('wr_login_modal_qr_img_expired')) return false;
@@ -36,7 +38,8 @@ class QRLoginManager:
                 raise ValueError('已有两个扫码窗口，请先关闭或完成绑定')
             session_id = uuid.uuid4().hex
             self.sessions[session_id] = {'status': 'starting', 'message': '正在加载微信读书登录页…',
-                                         'created': time.time(), 'qr': None, 'cancel': threading.Event()}
+                                         'created': time.time(), 'qr': None, 'cancel': threading.Event(),
+                                         'refresh': threading.Event(), 'refresh_id': None}
         threading.Thread(target=self._run, args=(session_id, options), daemon=True, name='qr-login').start()
         return session_id
 
@@ -50,17 +53,36 @@ class QRLoginManager:
             if session_id not in self.sessions:
                 raise KeyError('扫码会话不存在或已过期')
             state = self.sessions[session_id]
-            return {key: value for key, value in state.items() if key not in ('created', 'cancel')}
+            return {key: value for key, value in state.items() if key not in ('created', 'cancel', 'refresh')}
+
+    def refresh(self, session_id, request_id):
+        with self.lock:
+            state = self.sessions.get(session_id)
+            if not state or state['status'] not in ('starting', 'waiting', 'refreshing'):
+                raise ValueError('扫码会话已结束，请重新生成二维码')
+            state['refresh_id'] = request_id
+            state['refresh'].set()
+            state.update(status='refreshing', message='正在刷新二维码…', qr=None)
 
     def cancel(self, session_id):
         with self.lock:
             if session_id in self.sessions:
                 self.sessions[session_id]['cancel'].set()
+                self.sessions[session_id].update(status='cancelled', message='扫码已关闭', qr=None)
 
     def close(self):
         with self.lock:
             for state in self.sessions.values():
                 state['cancel'].set()
+
+    @staticmethod
+    def open_login(page):
+        page.goto('https://weread.qq.com/', wait_until='domcontentloaded', timeout=45000)
+        qr = page.locator('.wr_login_modal_qr_wrapper').first
+        if not qr.is_visible():
+            page.get_by_text('登录', exact=True).first.click(timeout=15000)
+        page.locator('.wr_login_modal_wrapper').wait_for(state='visible', timeout=30000)
+        qr.wait_for(state='visible', timeout=30000)
 
     def _run(self, session_id, options):
         try:
@@ -77,19 +99,20 @@ class QRLoginManager:
                     # Every binding must start with a new QR and an explicit phone confirmation.
                     context.route(re.compile(r'^https?://localhost\.weixin\.qq\.com'), lambda route: route.abort())
                     page = context.new_page()
-                    page.goto('https://weread.qq.com/', wait_until='domcontentloaded', timeout=45000)
+                    self.open_login(page)
                     qr = page.locator('.wr_login_modal_qr_wrapper').first
-                    if not qr.is_visible():
-                        page.get_by_text('登录', exact=True).first.click(timeout=15000)
                     modal = page.locator('.wr_login_modal_wrapper')
-                    modal.wait_for(state='visible', timeout=30000)
-                    qr.wait_for(state='visible', timeout=30000)
                     image = qr.locator('.wr_login_modal_qr_img').first
                     expired_overlay = page.locator('.wr_login_modal_qr_overlay').first
                     with self.lock:
                         cancel = self.sessions[session_id]['cancel']
+                        refresh = self.sessions[session_id].setdefault('refresh', threading.Event())
                     deadline = time.monotonic() + QR_SESSION_SECONDS
                     fingerprint = None
+                    blocked_fingerprint = None
+                    published_at = None
+                    refreshing_at = None
+                    reloads = 0
                     version = 0
                     while time.monotonic() < deadline and not cancel.is_set():
                         cookies = {cookie['name']: cookie['value'] for cookie in context.cookies('https://weread.qq.com/')}
@@ -104,24 +127,45 @@ class QRLoginManager:
                                 account_id=options.get('account_id'))
                             self.update(session_id, status='success', message='账户绑定成功', qr=None, account=account)
                             return
-                        if expired_overlay.is_visible():
-                            self.update(session_id, status='refreshing', message='二维码已失效，正在自动更新…', qr=None)
-                            # Refresh inside the existing official login session; avoid another Actions startup.
-                            expired_overlay.click(timeout=5000)
-                            fingerprint = None
+                        manual = refresh.is_set()
+                        stale = published_at is not None and time.monotonic() - published_at >= QR_IMAGE_SECONDS
+                        if manual or (refreshing_at is None and (expired_overlay.is_visible() or stale)):
+                            refresh.clear()
+                            self.update(session_id, status='refreshing', message='正在刷新二维码…', qr=None)
+                            blocked_fingerprint, fingerprint = fingerprint or blocked_fingerprint, None
+                            published_at = None
+                            refreshing_at = time.monotonic()
+                            try:
+                                if not manual and expired_overlay.is_visible():
+                                    expired_overlay.click(timeout=3000)
+                                else:
+                                    self.open_login(page)
+                            except Exception:
+                                self.open_login(page)
+                        if refreshing_at is not None and time.monotonic() - refreshing_at >= QR_REFRESH_GRACE:
+                            if reloads >= 3:
+                                raise ValueError('二维码刷新失败，请重新生成')
+                            self.open_login(page)
+                            refreshing_at = time.monotonic()
+                            reloads += 1
                         if qr.is_visible():
                             if image.is_visible() and page.evaluate(QR_READY_SCRIPT):
                                 content = image.evaluate("node => node.tagName === 'CANVAS' ? node.toDataURL() : node.tagName === 'IMG' ? node.currentSrc : node.innerHTML")
                                 current = hashlib.sha256(content.encode()).hexdigest()
-                                if current != fingerprint:
+                                if current != fingerprint and current != blocked_fingerprint:
                                     screenshot = base64.b64encode(qr.screenshot(timeout=5000)).decode()
                                     if not page.evaluate(QR_READY_SCRIPT):
                                         continue
                                     version += 1
                                     self.update(session_id, status='waiting',
-                                                message='使用微信扫一扫，并在手机上确认登录；失效后会自动更新',
-                                                qr='data:image/png;base64,' + screenshot, qr_version=version)
+                                                message='微信扫码后确认登录',
+                                                qr='data:image/png;base64,' + screenshot, qr_version=version,
+                                                qr_expires_at=time.time() + QR_IMAGE_SECONDS)
                                     fingerprint = current
+                                    published_at = time.monotonic()
+                                    refreshing_at = None
+                                    blocked_fingerprint = None
+                                    reloads = 0
                         if cancel.wait(1):
                             break
                     self.update(session_id, status='cancelled' if cancel.is_set() else 'expired',

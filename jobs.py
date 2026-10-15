@@ -29,7 +29,7 @@ class JobManager:
         self.client_factory = client_factory
         self.lock = threading.RLock()
         self.active = {}
-        self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='reading')
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='reading')
         self.scheduler = BackgroundScheduler()
 
     def start_scheduler(self):
@@ -83,6 +83,11 @@ class JobManager:
 
         status, message = 'failed', '任务执行失败'
         try:
+            if cancel.is_set():
+                raise Cancelled('任务已停止')
+            # A queued account may have refreshed credentials before its turn.
+            # Read them just before creating its own isolated HTTP session.
+            account = self.store.account(account['id'], private=True)
             self.store.update_run(run_id, status='running', message='正在准备阅读')
             client = self.client_factory(account, on_cookies=lambda cookies: self.store.save_cookies(account['id'], cookies))
             completed = client.run(account['read_num'], progress, cancel)

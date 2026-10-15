@@ -138,6 +138,68 @@ class ReaderCase(BaseStoreCase):
         jobs.cancel(a['id']);jobs.executor.shutdown(wait=True)
         self.assertEqual(self.store.runs()[0]['status'],'cancelled')
 
+    def test_three_accounts_run_in_order_with_fresh_isolated_credentials(self):
+        accounts = [self.bind(str(index)) for index in range(1, 4)]
+        entered, release = threading.Event(), threading.Event()
+        seen, clients = [], []
+        store = self.store
+
+        class Client:
+            def __init__(self, account, on_cookies):
+                self.account, self.on_cookies = account, on_cookies
+                clients.append(self)
+
+            def run(self, count, progress, cancel):
+                seen.append((self.account['vid'], self.account['cookies']['wr_skey']))
+                if self.account['vid'] == '1':
+                    entered.set()
+                    if not release.wait(3):
+                        raise RuntimeError('test gate timed out')
+                self.on_cookies({**self.account['cookies'], 'wr_skey': 'renewed-' + self.account['vid']})
+                progress(count, '完成')
+                return count
+
+        jobs = JobManager(store, Client)
+        try:
+            result = jobs.run_all()
+            self.assertTrue(entered.wait(2))
+            self.assertEqual(len(clients), 1)
+            self.assertEqual(len(result['started']), 3)
+            self.assertEqual(sum(run['status'] == 'queued' for run in store.runs()), 2)
+            store.save_cookies(accounts[1]['id'], {'wr_vid': '2', 'wr_skey': 'fresh-before-turn'})
+        finally:
+            release.set()
+            jobs.executor.shutdown(wait=True)
+        self.assertEqual(seen, [('1', 'SECRET-COOKIE-1'), ('2', 'fresh-before-turn'), ('3', 'SECRET-COOKIE-3')])
+        self.assertEqual(len({id(client.account['cookies']) for client in clients}), 3)
+        for index, account in enumerate(accounts, 1):
+            self.assertEqual(store.account(account['id'], True)['cookies']['wr_skey'], 'renewed-' + str(index))
+
+    def test_cancelling_queued_account_does_not_create_its_client(self):
+        a, b = self.bind('1'), self.bind('2')
+        entered, release = threading.Event(), threading.Event()
+        seen = []
+
+        class Client:
+            def __init__(self, account, **_):
+                seen.append(account['vid'])
+            def run(self, count, progress, cancel):
+                entered.set()
+                release.wait(3)
+                return count
+
+        jobs = JobManager(self.store, Client)
+        try:
+            jobs.run_all()
+            self.assertTrue(entered.wait(2))
+            jobs.cancel(b['id'])
+        finally:
+            release.set()
+            jobs.executor.shutdown(wait=True)
+        self.assertEqual(seen, ['1'])
+        self.assertEqual({run['account_id']: run['status'] for run in self.store.runs()},
+                         {a['id']: 'success', b['id']: 'cancelled'})
+
 
 class WebCase(BaseStoreCase):
     def setUp(self):

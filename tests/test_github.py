@@ -141,6 +141,60 @@ class GitHubCase(unittest.TestCase):
         control_operation(state,'delete',{'account_id':account_id})
         self.assertEqual(state['accounts'],[])
 
+    def test_third_account_is_added_and_duplicate_login_is_reported_as_update(self):
+        state = self.store.defaults()
+        results = []
+        for vid in ('1', '2', '3'):
+            results.append(control_operation(state, 'import', {
+                'curl': f"curl https://weread.qq.com -b 'wr_vid={vid}; wr_skey=fixture-{vid}'",
+                'name': '账户' + vid, 'read_num': 2}))
+        self.assertEqual(len(state['accounts']), 3)
+        self.assertEqual([result['action'] for result in results], ['added'] * 3)
+        result = control_operation(state, 'import', {
+            'curl': "curl https://weread.qq.com -b 'wr_vid=2; wr_skey=new-fixture'", 'read_num': 2})
+        self.assertEqual(result['action'], 'updated')
+        self.assertEqual(result['account_id'], results[1]['account_id'])
+        self.assertEqual(result['name'], '账户2')
+        self.assertEqual(len(state['accounts']), 3)
+
+    def test_older_publisher_cannot_replace_a_newer_third_account_snapshot(self):
+        client = PrivateKey.generate()
+        public = base64.b64encode(bytes(client.public_key)).decode()
+        self.store.mutate(lambda state: register_client(state, 'a' * 32, public))
+        older, _ = self.store.read()
+        latest = self.store.mutate(lambda state: bind_account(state, self.account, {'read_num': 2}))
+        self.assertGreater(latest['revision'], older['revision'])
+        self.store.publish(older)
+        saved = unseal(self.api.files['responses/' + 'a' * 32 + '.json']['ciphertext'], client)['overview']
+        self.assertEqual(saved['revision'], latest['revision'])
+        self.assertEqual(len(saved['accounts']), 1)
+
+    def test_qr_refresh_is_delivered_only_to_the_matching_worker_session(self):
+        client = PrivateKey.generate()
+        public = base64.b64encode(bytes(client.public_key)).decode()
+        server = base64.b64encode(bytes(self.key.public_key)).decode()
+        self.api.put_file('requests/' + 'c' * 32 + '.json', {'ciphertext': seal({
+            'action': 'refresh', 'session_id': 'c' * 32, 'request_id': 'd' * 32}, server)})
+
+        class Manager:
+            calls = []
+            def __init__(self, local):
+                pass
+            def start(self, options):
+                self.states = iter([{'status': 'waiting', 'qr': 'old', 'qr_version': 1},
+                                    {'status': 'expired', 'qr': None}])
+                return 'local-session'
+            def state(self, _):
+                return next(self.states)
+            def refresh(self, session, request):
+                self.calls.append((session, request))
+            def close(self):
+                pass
+
+        with patch('github_worker.QRLoginManager', Manager), patch('github_worker.time.sleep'):
+            qr_binding(self.store, 'c' * 32, public, {})
+        self.assertEqual(Manager.calls, [('local-session', 'd' * 32)])
+
     def test_notifications_are_encrypted_and_credentials_are_never_returned(self):
         def apply(state):
             control_operation(state,'notifications',{'channel':'pushplus','settings':{'enabled':True,'token':'PRIVATE-PUSH-TOKEN'}})

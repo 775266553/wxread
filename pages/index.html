@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>阅伴 · 微信读书控制台</title><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; base-uri 'self'; form-action 'self'">
   <meta name="description" content="微信读书多账户管理">
-  <link rel="icon" href="./static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./static/style.css?v=e3573c5800"><script defer src="./static/libsodium.js?v=0a66b0fdfb"></script><script defer src="./static/libsodium-wrappers.js?v=828884732c"></script><script defer src="./static/github.js?v=95f7320fa6"></script><script defer src="./static/notifications.js?v=df425afe13"></script><script defer src="./static/app.js?v=532c3c7770"></script>
+  <link rel="icon" href="./static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="./static/style.css?v=20ab6e3813"><script defer src="./static/libsodium.js?v=0a66b0fdfb"></script><script defer src="./static/libsodium-wrappers.js?v=828884732c"></script><script defer src="./static/github.js?v=b3a190d144"></script><script defer src="./static/notifications.js?v=df425afe13"></script><script defer src="./static/app.js?v=48fa663574"></script>
 </head>
 <body>
 <svg class="sprite" xmlns="http://www.w3.org/2000/svg"><defs>
@@ -50,7 +50,7 @@
   <form id="bind-form">
     <label>账户备注<input name="name" maxlength="80" placeholder="账户名称"></label>
     <div class="form-row"><label>目标时长（分钟）<input name="minutes" type="number" min="0.5" max="1440" step="0.5" value="20" required></label><label>通知邮箱（可选）<input name="email" type="email" placeholder="使用默认收件邮箱"></label></div>
-    <div id="qr-panel"><div id="qr-area" class="qr-area"><svg class="icon"><use href="#i-qr"/></svg><span>点击生成二维码</span></div><p id="qr-status" class="qr-status"></p><button id="qr-start" class="button primary full" type="submit">生成二维码<svg class="icon"><use href="#i-arrow"/></svg></button></div>
+    <div id="qr-panel"><div id="qr-area" class="qr-area"><svg class="icon"><use href="#i-qr"/></svg><span>点击生成二维码</span></div><p id="qr-status" class="qr-status"></p><button id="qr-start" class="button primary full" type="submit">生成二维码<svg class="icon"><use href="#i-arrow"/></svg></button><button id="qr-refresh" class="button full" type="button" hidden>刷新二维码</button></div>
     <div id="import-panel" hidden><label>微信读书 read 请求的 cURL<textarea name="curl" rows="5" placeholder="粘贴 read 请求的 cURL"></textarea></label><button class="button primary full" type="submit">导入并绑定</button></div>
     <p id="bind-error" class="form-error" role="alert"></p>
   </form>
@@ -63,8 +63,8 @@
   <form id="auth-form">
     <label>仓库<input name="repository" placeholder="owner/wxread" required autocomplete="off"></label>
     <label><span class="token-field-title">GitHub Token<a id="token-settings-link" class="token-settings-link" href="https://github.com/settings/personal-access-tokens" target="_blank" rel="noopener noreferrer">配置 Token ↗</a></span><input name="token" type="password" aria-label="GitHub Token" autocomplete="off" placeholder="github_pat_…" required></label>
-    <label class="toggle-label"><span>保持当前标签页连接</span><input name="remember" type="checkbox" class="switch"></label>
-    <p class="section-description">在当前标签页保存登录信息，12 小时内刷新可恢复；断开后清除。</p>
+    <label class="toggle-label"><span>记住登录（7 天）</span><input name="remember" type="checkbox" class="switch"></label>
+    <p class="section-description">在此浏览器保存 Token，断开连接时清除。共享设备请勿勾选。</p>
     <p id="auth-error" class="form-error" role="status"></p><button class="button primary full">连接仓库</button>
   </form>
 </dialog>

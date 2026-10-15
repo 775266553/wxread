@@ -119,6 +119,7 @@ class GitHubState:
         for attempt in range(5):
             state, sha = self.read()
             function(state)
+            state['revision'] = state.get('revision', 0) + 1
             state['updated_at'] = now()
             encrypted = {'version': 1, 'ciphertext': base64.b64encode(self.box.encrypt(encode(state))).decode()}
             try:
@@ -137,9 +138,13 @@ class GitHubState:
         validate_id(session_id)
         path = f'responses/{session_id}.json'
         for attempt in range(5):
-            _, sha = self.api.get_file(path)
+            previous, sha = self.api.get_file(path)
+            revision = value.get('overview', {}).get('revision')
+            if revision is not None and previous and previous.get('revision', -1) > revision:
+                return
             try:
-                self.api.put_file(path, {'version': 1, 'ciphertext': seal(value, public_key)}, sha)
+                self.api.put_file(path, {'version': 1, 'ciphertext': seal(value, public_key),
+                                        **({'revision': revision} if revision is not None else {})}, sha)
                 return
             except ConflictError:
                 if attempt == 4:
@@ -177,7 +182,8 @@ def overview(state):
             days[key]['minutes'] += run['completed'] * 0.5
             days[key]['success'] += run['status'] == 'success'
             days[key]['running'] += run['status'] == 'running'
-    return {'accounts': accounts, 'runs': sorted(state['runs'], key=lambda r:r['started_at'], reverse=True)[:100],
+    return {'revision': state.get('revision', 0), 'updated_at': state.get('updated_at'),
+            'accounts': accounts, 'runs': sorted(state['runs'], key=lambda r:r['started_at'], reverse=True)[:100],
             'schedule': schedule, 'next_run': next_run.isoformat() if next_run else None, 'email': email,
             'notifications': public_notifications(state.get('notifications', notification_settings())),
             'statistics': {'days': list(days.values()), 'today': days[today.isoformat()]}}

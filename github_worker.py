@@ -41,7 +41,7 @@ def control_operation(state, operation, options):
         return
     if operation == 'import':
         headers, cookies = convert(str(options.get('curl', '')))
-        bind_account(state, {'headers': {**default_headers, **headers}, 'cookies': cookies}, options)
+        return binding_result(state, {'headers': {**default_headers, **headers}, 'cookies': cookies}, options)
     elif operation == 'update':
         account = find_account(state, options['account_id'])
         name = str(options.get('name', account['name'])).strip()
@@ -69,6 +69,14 @@ def control_operation(state, operation, options):
         raise ValueError('操作无效')
 
 
+def binding_result(state, account, options):
+    existing_ids = {item['id'] for item in state['accounts']}
+    account_id = bind_account(state, account, options)
+    saved = next(item for item in state['accounts'] if item['id'] == account_id)
+    return {'account_id': account_id, 'name': saved['name'],
+            'action': 'updated' if account_id in existing_ids else 'added'}
+
+
 def register_client(state, session_id, public_key):
     clients = [c for c in state.get('clients', []) if c['id'] != session_id and
                datetime.fromisoformat(c['expires_at']) > datetime.now(timezone.utc)]
@@ -90,20 +98,35 @@ def qr_binding(repository, session_id, public_key, options):
         manager = QRLoginManager(local)
         login = manager.start(login_options)
         last_snapshot = None
+        last_request = None
+        next_request_check = 0
         try:
             deadline = time.monotonic() + QR_SESSION_SECONDS + 90
             while time.monotonic() < deadline:
                 result = manager.state(login)
                 if result['status'] == 'success':
                     account = local.account(result['account']['id'], private=True)
-                    state = repository.mutate(lambda s: bind_account(s, account, options))
-                    repository.respond(session_id, public_key, {'status':'success', 'message':'账户已绑定', 'overview':overview(state)})
+                    binding = {}
+                    state = repository.mutate(lambda s: binding.update(binding_result(s, account, options)))
+                    repository.respond(session_id, public_key, {'status':'success', 'message':'账户已绑定',
+                                                               'binding':binding, 'overview':overview(state)})
                     return
                 if result['status'] in ('failed','expired','cancelled'):
                     repository.respond(session_id, public_key, result)
                     return
+                if time.monotonic() >= next_request_check:
+                    next_request_check = time.monotonic() + 5
+                    try:
+                        request, _ = repository.api.get_file(f'requests/{session_id}.json')
+                        if request and request.get('ciphertext') != last_request:
+                            values = unseal(request['ciphertext'], repository.private_key)
+                            if values.get('session_id') == session_id and values.get('action') == 'refresh':
+                                manager.refresh(login, validate_id(values['request_id']))
+                                last_request = request['ciphertext']
+                    except RuntimeError:
+                        logging.warning('暂时无法读取二维码刷新请求，稍后重试')
                 # Publish every new QR, even when a quick refresh stays in the waiting status.
-                snapshot = (result['status'], result.get('qr_version'))
+                snapshot = (result['status'], result.get('qr_version'), result.get('refresh_id'))
                 if snapshot != last_snapshot and (result['status'] != 'waiting' or result.get('qr')):
                     repository.respond(session_id, public_key, result)
                     last_snapshot = snapshot
@@ -141,8 +164,14 @@ def control():
             send_channel(channel, settings, '这是来自阅伴控制台的测试通知。', test=True)
             repository.respond(session_id, public_key, {'status':'success','message':CHANNEL_LABELS[channel]+' 已接受测试请求，请检查接收端'})
         else:
-            state = repository.mutate(lambda s: control_operation(s, operation, options))
-            repository.respond(session_id, public_key, {'status':'success','overview':overview(state)})
+            outcome = {}
+            def apply(state):
+                result = control_operation(state, operation, options)
+                outcome.clear()
+                if result:
+                    outcome['binding'] = result
+            state = repository.mutate(apply)
+            repository.respond(session_id, public_key, {'status':'success','overview':overview(state), **outcome})
         return 0
     except Exception as exc:
         message = str(exc) if type(exc) in (ValueError, RuntimeError) else '操作失败，请检查 Actions 日志中的错误类型及配置'

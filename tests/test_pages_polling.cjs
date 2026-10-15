@@ -9,7 +9,7 @@ function setup(){
   function node(selector){if(!nodes.has(selector))nodes.set(selector,{textContent:'',title:'',innerHTML:'',open:false,hidden:false,
     elements:{repository:{value:''},remember:{checked:false},token:{value:''}},classList:{toggle(){}},
     addEventListener(){},showModal(){this.open=true;},close(){this.open=false;}});return nodes.get(selector);}
-  const client={connected:false,sessionVersion:1,retryAt:0,restore:async()=>false,overview:async()=>({})};
+  const client={connected:false,sessionVersion:1,retryAt:0,cancel:async()=>{},restore:async()=>false,overview:async()=>({})};
   const document={querySelector:node,querySelectorAll:()=>[],visibilityState:'visible',addEventListener:(name,fn)=>{if(!events.has(name))events.set(name,[]);events.get(name).push(fn);}};
   const scope=vm.createContext({window:{githubClient:client,scrollTo(){},addEventListener:(name,fn)=>windowEvents.set(name,fn)},document,
     sodium:{ready:Promise.resolve()},location:{hostname:'localhost',pathname:'/'},localStorage:{getItem:()=>null},
@@ -26,7 +26,7 @@ async function main(){
     const manual=scope.refresh();scope.startPolling(true);const tick=fire();const second=scope.refresh();
     assert.equal(calls,1,'manual refresh and polling share one request');assert.equal(timers.size,0,'do not schedule another poll before the current one finishes');
     finish({accounts:[]});await Promise.all([manual,tick,second]);assert.equal(node('#connection').textContent,'GitHub 已连接');assert.equal(timers.size,1);
-    assert.equal([...timers.values()][0].ms,10000);scope.pausePolling();assert.equal(timers.size,0);
+    assert.equal([...timers.values()][0].ms,60000);scope.pausePolling();assert.equal(timers.size,0);
   }
   {
     const {scope,client,node,timers,fire}=setup();await flush();client.connected=true;
@@ -50,6 +50,28 @@ async function main(){
     const {scope,client,node}=setup();await flush();client.connected=true;node('#auth-dialog').open=false;
     client.overview=async()=>{client.connected=false;client.sessionVersion++;throw Object.assign(new Error('Token invalid'),{code:'AUTHENTICATION'});};
     await scope.refresh();assert.equal(node('#auth-dialog').open,true);assert.equal(node('#auth-error').textContent,'Token invalid');assert.equal(node('#connection').textContent,'需要重新连接');
+  }
+  {
+    const {scope,client,node}=setup();await flush();client.connected=true;
+    scope.render=()=>{};client.acceptOverview=value=>{client.data=value;};client.overview=async()=>client.data;
+    node('#bind-dialog').open=true;vm.runInContext("loginSession='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';bindAccount=null",scope);
+    client.state=async()=>({status:'success',binding:{account_id:'third',action:'added',name:'第三个账户'},overview:{revision:3,accounts:[{id:'first'},{id:'second'},{id:'third'}]}});
+    await scope.pollQR('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');assert.equal(client.data.accounts.length,3);assert.equal(node('#bind-dialog').open,false);
+    assert.equal(node('#toast').textContent,'已添加账户：第三个账户');
+  }
+  {
+    const {scope,client,node}=setup();await flush();client.connected=true;scope.render=()=>{};
+    client.acceptOverview=value=>{client.data=value;};client.overview=async()=>client.data;
+    node('#bind-dialog').open=true;vm.runInContext("loginSession='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';bindAccount=null",scope);
+    client.state=async()=>({status:'success',binding:{account_id:'second',action:'updated',name:'账户二'},overview:{revision:3,accounts:[{id:'first'},{id:'second'}]}});
+    await scope.pollQR('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');assert.equal(node('#bind-dialog').open,true,'do not silently close when the same account is scanned');
+    assert.equal(node('#qr-status').textContent,'已更新已有账户：账户二，未新增账户');assert.equal(node('#qr-start').disabled,false);
+  }
+  {
+    const {scope,client,node}=setup();await flush();client.connected=true;node('#bind-dialog').open=true;
+    vm.runInContext("loginSession='cccccccccccccccccccccccccccccccc'",scope);client.state=async()=>({status:'expired',message:'扫码窗口已结束'});
+    await scope.pollQR('cccccccccccccccccccccccccccccccc');assert.equal(node('#qr-start').disabled,false);assert.equal(node('#qr-start').textContent,'重新生成二维码');
+    assert.equal(vm.runInContext('loginSession',scope),null,'release an expired QR session before a new binding');
   }
   console.log('Pages polling, visibility and login prompt regression checks passed');
 }
