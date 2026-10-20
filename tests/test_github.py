@@ -130,6 +130,26 @@ class GitHubCase(unittest.TestCase):
         self.assertTrue(snapshot['email']['has_password'])
         self.assertNotIn('password',snapshot['email'])
 
+    def test_failed_browser_snapshot_does_not_fail_a_committed_account_update(self):
+        from github_state import GitHubAPIError
+        clients = [PrivateKey.generate(), PrivateKey.generate()]
+        def apply(state):
+            for index, client in enumerate(clients):
+                register_client(state, str(index + 1) * 32, base64.b64encode(bytes(client.public_key)).decode())
+            bind_account(state, self.account, {'read_num': 2})
+        original = self.api.put_file
+        def fail_one_snapshot(path, value, sha=None):
+            if path == 'responses/' + '1' * 32 + '.json':
+                raise GitHubAPIError('PUT', path, status=503, retryable=True)
+            return original(path, value, sha)
+        with patch.object(self.api, 'put_file', side_effect=fail_one_snapshot), self.assertLogs(level='WARNING'):
+            result = self.store.mutate(apply)
+        state, _ = self.store.read()
+        self.assertEqual(len(state['accounts']), 1)
+        self.assertEqual(state['revision'], result['revision'])
+        snapshot = unseal(self.api.files['responses/' + '2' * 32 + '.json']['ciphertext'], clients[1])
+        self.assertEqual(len(snapshot['overview']['accounts']), 1, 'still update the other browser')
+
     def test_curl_import_update_and_delete(self):
         state=self.store.defaults()
         control_operation(state,'import',{'curl':"curl https://weread.qq.com -b 'wr_vid=1; wr_skey=secret'",'name':'我','read_num':4})

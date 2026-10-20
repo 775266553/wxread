@@ -3,6 +3,7 @@ import base64
 import copy
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -41,6 +42,21 @@ def unseal(value, private_key):
     return json.loads(SealedBox(private_key).decrypt(base64.b64decode(value, validate=True)))
 
 
+class GitHubAPIError(RuntimeError):
+    def __init__(self, method, path, status=None, retryable=False, retry_after=0):
+        resource = '账户状态' if 'state.enc.json' in path else '浏览器快照' if 'responses/' in path else \
+                   '扫码请求' if 'requests/' in path else '公钥配置' if 'control.json' in path else '仓库接口'
+        self.retryable = retryable
+        self.retry_after = retry_after
+        detail = f'HTTP {status}' if status else '连接中断或响应无效'
+        super().__init__(f'GitHub {method} {resource}失败（{detail}）')
+
+
+def safe_error(error):
+    # Only our own fixed API diagnostics are safe to include in public Actions logs.
+    return str(error) if isinstance(error, GitHubAPIError) else type(error).__name__
+
+
 class GitHubAPI:
     def __init__(self, repository=None, token=None):
         self.repository = repository or os.environ['GITHUB_REPOSITORY']
@@ -49,19 +65,39 @@ class GitHubAPI:
         self.token = token or os.environ['GH_TOKEN']
 
     def request(self, method, path, value=None, missing=False):
-        try:
-            response = requests.request(method, 'https://api.github.com/repos/' + self.repository + path,
-                headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json',
-                         'X-GitHub-Api-Version': '2026-03-10'}, json=value, timeout=(10, 30), allow_redirects=False)
-        except requests.RequestException:
-            raise RuntimeError('无法连接 GitHub API') from None
-        if missing and response.status_code == 404:
-            return None
-        if response.status_code == 409:
-            raise ConflictError()
-        if not 200 <= response.status_code < 300:
-            raise RuntimeError(f'GitHub API 请求失败（HTTP {response.status_code}）')
-        return response.json() if response.content else None
+        attempts = 3 if method == 'GET' else 1
+        for attempt in range(attempts):
+            try:
+                response = requests.request(method, 'https://api.github.com/repos/' + self.repository + path,
+                    headers={'Authorization': 'Bearer ' + self.token, 'Accept': 'application/vnd.github+json',
+                             'X-GitHub-Api-Version': '2026-03-10'}, json=value, timeout=(10, 30), allow_redirects=False)
+            except requests.RequestException:
+                error = GitHubAPIError(method, path, retryable=True)
+            else:
+                if missing and response.status_code == 404:
+                    return None
+                if response.status_code == 409:
+                    raise ConflictError()
+                if 200 <= response.status_code < 300:
+                    try:
+                        return response.json() if response.content else None
+                    except ValueError:
+                        error = GitHubAPIError(method, path, retryable=True)
+                else:
+                    limited = response.status_code == 429 or (response.status_code == 403 and
+                              (response.headers.get('x-ratelimit-remaining') == '0' or 'retry-after' in response.headers))
+                    try:
+                        retry_after = max(0, float(response.headers.get('retry-after', 0)))
+                        if response.headers.get('x-ratelimit-remaining') == '0':
+                            retry_after = max(retry_after, float(response.headers.get('x-ratelimit-reset', 0)) - time.time())
+                    except (TypeError, ValueError):
+                        retry_after = 0
+                    error = GitHubAPIError(method, path, status=response.status_code,
+                                           retryable=limited or response.status_code in (408, 500, 502, 503, 504),
+                                           retry_after=retry_after)
+            if not error.retryable or attempt + 1 == attempts or error.retry_after > 60:
+                raise error from None
+            time.sleep(max(2 ** attempt, error.retry_after))
 
     def get_file(self, path):
         result = self.request('GET', f'/contents/{path}?ref={STATE_BRANCH}', missing=True)
@@ -74,7 +110,27 @@ class GitHubAPI:
                 'content': base64.b64encode(encode(value)).decode()}
         if sha:
             body['sha'] = sha
-        return self.request('PUT', '/contents/' + path, body)
+        for attempt in range(3):
+            try:
+                return self.request('PUT', '/contents/' + path, body)
+            except (GitHubAPIError, ConflictError) as error:
+                if isinstance(error, GitHubAPIError) and not error.retryable:
+                    raise
+                # A timeout may arrive after GitHub has committed the update. Verify
+                # the exact value before retrying with the original conditional SHA.
+                try:
+                    current, current_sha = self.get_file(path)
+                except GitHubAPIError as check_error:
+                    if not check_error.retryable or attempt == 2:
+                        raise
+                else:
+                    if current == value:
+                        return
+                    if current_sha != sha:
+                        raise ConflictError() from None
+                if isinstance(error, ConflictError) or attempt == 2 or error.retry_after > 60:
+                    raise
+                time.sleep(max(2 ** attempt, error.retry_after))
 
 
 class ConflictError(RuntimeError):
@@ -155,7 +211,10 @@ class GitHubState:
         snapshot = overview(state)
         for client in state.get('clients', [])[-4:]:
             if datetime.fromisoformat(client['expires_at']) > datetime.now(timezone.utc):
-                self.respond(client['id'], client['public_key'], {'status': 'snapshot', 'overview': snapshot})
+                try:
+                    self.respond(client['id'], client['public_key'], {'status': 'snapshot', 'overview': snapshot})
+                except RuntimeError as error:
+                    logging.warning('账户状态已保存，浏览器快照暂未更新：%s', safe_error(error))
 
 
 def workflow_cron():

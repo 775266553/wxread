@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 from account_store import AccountStore, now, validate_count, validate_email
 from config import convert, headers as default_headers
-from github_state import GitHubState, bind_account, overview, unseal, validate_id
+from github_state import GitHubAPIError, GitHubState, bind_account, overview, safe_error, unseal, validate_id
 from jobs import JobManager
 from push import send_email, validate_email_settings
 from notifications import CHANNEL_LABELS, notification_settings, prepare_notification, send_channel
@@ -176,7 +176,7 @@ def control():
     except Exception as exc:
         message = str(exc) if type(exc) in (ValueError, RuntimeError) else '操作失败，请检查 Actions 日志中的错误类型及配置'
         repository.respond(session_id, public_key, {'status':'failed','message':message})
-        logging.error('控制操作失败（%s）', type(exc).__name__)
+        logging.error('控制操作失败：%s', safe_error(exc))
         return 1
 
 
@@ -226,22 +226,35 @@ def reading():
         def stop(*_):
             raise KeyboardInterrupt
 
+        def sync_progress(required=False):
+            try:
+                repository.mutate(persist)
+            except GitHubAPIError as error:
+                if required or not error.retryable:
+                    raise
+                logging.warning('本轮进度暂未同步，下一轮重试；阅读继续：%s', safe_error(error))
+
         signal.signal(signal.SIGTERM, stop)
         try:
-            repository.mutate(persist)
+            sync_progress()
             last_publish = time.monotonic()
             while jobs.active:
                 time.sleep(2)
                 if time.monotonic()-last_publish >= 60:
-                    repository.mutate(persist)
+                    sync_progress()
                     last_publish = time.monotonic()
-            jobs.executor.shutdown(wait=True)
         except KeyboardInterrupt:
-            jobs.shutdown()
+            pass
         finally:
-            repository.mutate(persist)
+            jobs.shutdown()
+            runs = local.runs(10000)
+            logging.info('阅读结果：%d 个账户，%d 个成功，%d 个失败，%d 个取消，%d 个跳过', len(selected),
+                         sum(r['status']=='success' for r in runs), sum(r['status']=='failed' for r in runs),
+                         sum(r['status']=='cancelled' for r in runs), len(result['skipped']))
+            logging.info('正在保存最终进度')
+            sync_progress(required=True)
+            logging.info('最终进度已保存')
         runs = local.runs(10000)
-        logging.info('本次任务：%d 个账户，%d 个成功', len(selected), sum(r['status']=='success' for r in runs))
         return 1 if result['skipped'] or any(r['status']!='success' for r in runs) else 0
 
 
@@ -250,5 +263,5 @@ if __name__ == '__main__':
     try:
         sys.exit(control() if sys.argv[1:] == ['control'] else reading())
     except Exception as exc:
-        logging.error('Actions 执行失败（%s）', type(exc).__name__)
+        logging.error('Actions 执行失败：%s', safe_error(exc))
         sys.exit(1)
